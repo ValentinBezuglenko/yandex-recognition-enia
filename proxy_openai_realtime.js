@@ -43,6 +43,7 @@ async function createRealtimeSession() {
       },
       config
     );
+    console.log("OpenAI API Response:", JSON.stringify(response.data, null, 2));
     return response.data;
   } catch (error) {
     console.error("❌ Error creating Realtime session:");
@@ -87,6 +88,21 @@ async function start() {
       console.log("Creating OpenAI Realtime session...");
       const session = await createRealtimeSession();
       console.log("✅ Realtime session created");
+      console.log("Session data:", JSON.stringify(session, null, 2));
+
+      // Проверяем структуру ответа OpenAI
+      let wsUrl;
+      if (session.client_secret && session.client_secret.value) {
+        wsUrl = session.client_secret.value;
+      } else if (session.url) {
+        wsUrl = session.url;
+      } else if (session.client_secret) {
+        wsUrl = session.client_secret;
+      } else {
+        throw new Error("No WebSocket URL found in session response. Session: " + JSON.stringify(session));
+      }
+
+      console.log("WebSocket URL:", wsUrl);
 
       const wsOptions = {
         headers: { Authorization: `Bearer ${OPENAI_KEY}` },
@@ -101,7 +117,7 @@ async function start() {
         console.log(`🌐 Using proxy for WebSocket: ${PROXY_URL}`);
       }
 
-      const oa = new WebSocket(session.client_secret.value, wsOptions);
+      const oa = new WebSocket(wsUrl, wsOptions);
 
       oa.on("open", () => {
         console.log("✅ Connected to OpenAI Realtime");
