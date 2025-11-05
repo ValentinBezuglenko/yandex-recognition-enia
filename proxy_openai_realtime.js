@@ -146,7 +146,18 @@ async function start() {
 
       oa.on("message", (data) => {
         const msg = data.toString();
-        console.log("<<<", msg.slice(0, 120));
+        console.log("<<<", msg.slice(0, 200)); // Увеличил до 200 символов для полного сообщения об ошибке
+        
+        // Если это ошибка, логируем полностью
+        try {
+          const parsed = JSON.parse(msg);
+          if (parsed.type === "error") {
+            console.error("❌ OpenAI Error:", JSON.stringify(parsed, null, 2));
+          }
+        } catch (e) {
+          // Не JSON, просто логируем
+        }
+        
         esp.send(msg);
       });
 
