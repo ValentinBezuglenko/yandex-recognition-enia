@@ -104,9 +104,8 @@ async function start() {
 
       console.log("WebSocket URL:", wsUrl);
 
-      const wsOptions = {
-        headers: { Authorization: `Bearer ${OPENAI_KEY}` },
-      };
+      // Для WebSocket к OpenAI не нужен Authorization header, т.к. аутентификация через client_secret в URL
+      const wsOptions = {};
 
       // Добавляем прокси для WebSocket соединения, если указан
       if (PROXY_URL) {
