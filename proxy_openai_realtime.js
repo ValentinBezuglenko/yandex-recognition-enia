@@ -156,7 +156,6 @@ async function start() {
         console.log("🔌 OpenAI WebSocket closed");
         console.log("Close code:", code, "Reason:", reason.toString());
         openAIConnected = false; // Сбрасываем флаг подключения
-        if (autoCommitInterval) clearInterval(autoCommitInterval);
         if (esp.readyState === WebSocket.OPEN) {
           esp.close();
         }
@@ -166,52 +165,38 @@ async function start() {
       let audioChunksSent = 0;
       let lastAudioTime = 0;
       let openAIConnected = false; // Флаг подключения к OpenAI
-
-      // Автоматически отправляем commit если нет активности более 3 секунд
-      // Но только если было отправлено хотя бы немного аудио данных
-      const autoCommitInterval = setInterval(() => {
-        if (oa.readyState === WebSocket.OPEN && openAIConnected && esp.readyState === WebSocket.OPEN) {
-          const timeSinceLastAudio = Date.now() - lastAudioTime;
-          // Если прошло более 3 секунд после последнего аудио и было отправлено хотя бы 10 чанков
-          if (timeSinceLastAudio > 3000 && audioChunksSent >= 10 && lastAudioTime > 0) {
-            console.log(`⏰ Auto-committing after ${timeSinceLastAudio}ms of silence (${audioChunksSent} chunks)`);
-            // Небольшая задержка перед commit, чтобы убедиться, что все чанки доставлены
-            setTimeout(() => {
-              oa.send(JSON.stringify({
-                type: "input_audio_buffer.commit"
-              }));
-              
-              setTimeout(() => {
-                oa.send(JSON.stringify({
-                  type: "response.create",
-                  response: {
-                    modalities: ["text"]
-                  }
-                }));
-              }, 100);
-            }, 200); // 200ms задержка перед commit
-            
-            // Сбрасываем счетчик после commit
-            audioChunksSent = 0;
-            lastAudioTime = 0;
-          }
+      
+      // Конвертируем 32-битный PCM в 16-битный PCM для OpenAI
+      function convert32to16Bit(buffer) {
+        const samples32 = new Int32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
+        const samples16 = new Int16Array(samples32.length);
+        for (let i = 0; i < samples32.length; i++) {
+          // Конвертируем 32-битный sample в 16-битный (берем старшие 16 бит)
+          samples16[i] = samples32[i] >> 16;
         }
-      }, 1000); // Проверяем каждую секунду
+        return Buffer.from(samples16.buffer);
+      }
+
+      // УБРАЛИ автоматический commit по таймауту - теперь commit только при явной остановке от ESP32
+      // Это предотвращает ошибки с пустым буфером
 
       // Пересылаем бинарные чанки от ESP → OpenAI
       esp.on("message", (msg) => {
         if (Buffer.isBuffer(msg)) {
           if (oa.readyState === WebSocket.OPEN && openAIConnected) {
+            // Конвертируем 32-битный PCM в 16-битный PCM для OpenAI
+            const audio16Bit = convert32to16Bit(msg);
+            
             // Отправляем аудио как input_audio_buffer.append только если OpenAI подключен
             oa.send(JSON.stringify({
               type: "input_audio_buffer.append",
-              audio: msg.toString("base64")
+              audio: audio16Bit.toString("base64")
             }));
             
             audioChunksSent++;
             lastAudioTime = Date.now();
             if (audioChunksSent % 10 === 0) {
-              console.log(`📊 Sent ${audioChunksSent} audio chunks`);
+              console.log(`📊 Sent ${audioChunksSent} audio chunks (${audio16Bit.length} bytes each)`);
             }
           } else {
             // OpenAI еще не подключен - игнорируем чанки, чтобы не терять счетчик
@@ -227,7 +212,7 @@ async function start() {
               // Проверяем, что есть аудио данные перед commit
               if (audioChunksSent > 0) {
                 console.log(`📤 Committing ${audioChunksSent} audio chunks after stop signal`);
-                // Небольшая задержка, чтобы убедиться, что все последние аудио чанки доставлены
+                // Увеличиваем задержку перед commit, чтобы убедиться, что все последние аудио чанки доставлены
                 setTimeout(() => {
                   oa.send(JSON.stringify({
                     type: "input_audio_buffer.commit"
@@ -241,7 +226,7 @@ async function start() {
                       }
                     }));
                   }, 100);
-                }, 200); // 200ms задержка перед commit
+                }, 500); // Увеличена задержка до 500ms перед commit
               } else {
                 console.log("⚠️  No audio data to commit");
               }
@@ -255,7 +240,6 @@ async function start() {
       esp.on("close", (code, reason) => {
         console.log("🔌 ESP disconnected");
         console.log("Close code:", code, "Reason:", reason.toString());
-        if (autoCommitInterval) clearInterval(autoCommitInterval);
         if (oa.readyState === WebSocket.OPEN) {
           oa.close();
         }
