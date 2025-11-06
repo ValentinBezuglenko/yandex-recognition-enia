@@ -16,9 +16,10 @@ const char* openai_token = "ek_690bde8dcd6c8191802cbbce8cebf517";  // токен
 #define I2S_SCK 26
 #define I2S_PORT I2S_NUM_0
 #define SAMPLE_RATE 16000
-#define SAMPLE_BITS 32   // Исправлено: большинство I2S микрофонов 24/32 бит
+#define SAMPLE_BITS 32   // I2S читает 32 бита
 #define BUFFER_SIZE 1024
 #define DMA_BUF_COUNT 4
+#define AUDIO_CHUNK_SIZE 512  // Размер чанка для отправки (16-битный PCM)
 
 // ---------- BUTTON ----------
 #define BUTTON_PIN 32
@@ -33,7 +34,8 @@ unsigned long lastStatTime = 0;
 uint64_t totalSentBytes = 0;
 
 #define QUEUE_SIZE 3
-uint8_t audioQueue[QUEUE_SIZE][BUFFER_SIZE];
+uint8_t audioQueue[QUEUE_SIZE][BUFFER_SIZE];  // Исходные 32-битные данные
+uint8_t audio16Bit[AUDIO_CHUNK_SIZE];         // Конвертированные 16-битные данные
 bool queueFull[QUEUE_SIZE] = {false};
 int queueHead = 0;
 int queueTail = 0;
@@ -107,13 +109,30 @@ void readAudioData() {
   }
 }
 
+// ---------- CONVERT 32-bit to 16-bit PCM ----------
+void convert32to16Bit(uint8_t* input32, uint8_t* output16, size_t inputSize) {
+  // inputSize должно быть кратно 4 (32 бита = 4 байта)
+  size_t samples32 = inputSize / 4;
+  int16_t* out16 = (int16_t*)output16;
+  int32_t* in32 = (int32_t*)input32;
+  
+  for (size_t i = 0; i < samples32; i++) {
+    // Берем старшие 16 бит из 32-битного sample
+    out16[i] = (int16_t)(in32[i] >> 16);
+  }
+}
+
 // ---------- SEND ----------
 void sendAudioData() {
   if (!webSocket.isConnected()) return;
   if (!queueFull[queueTail]) return;
 
-  bool ok = webSocket.sendBIN(audioQueue[queueTail], BUFFER_SIZE);
-  if (ok) totalSentBytes += BUFFER_SIZE;
+  // Конвертируем 32-битный PCM в 16-битный (BUFFER_SIZE байт -> AUDIO_CHUNK_SIZE байт)
+  convert32to16Bit(audioQueue[queueTail], audio16Bit, BUFFER_SIZE);
+  
+  // Отправляем конвертированные 16-битные данные
+  bool ok = webSocket.sendBIN(audio16Bit, AUDIO_CHUNK_SIZE);
+  if (ok) totalSentBytes += AUDIO_CHUNK_SIZE;
   else Serial.println("[WS] Send failed!");
 
   queueFull[queueTail] = false;
