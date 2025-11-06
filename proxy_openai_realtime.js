@@ -165,17 +165,6 @@ async function start() {
       let audioChunksSent = 0;
       let lastAudioTime = 0;
       let openAIConnected = false; // Флаг подключения к OpenAI
-      
-      // Конвертируем 32-битный PCM в 16-битный PCM для OpenAI
-      function convert32to16Bit(buffer) {
-        const samples32 = new Int32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
-        const samples16 = new Int16Array(samples32.length);
-        for (let i = 0; i < samples32.length; i++) {
-          // Конвертируем 32-битный sample в 16-битный (берем старшие 16 бит)
-          samples16[i] = samples32[i] >> 16;
-        }
-        return Buffer.from(samples16.buffer);
-      }
 
       // УБРАЛИ автоматический commit по таймауту - теперь commit только при явной остановке от ESP32
       // Это предотвращает ошибки с пустым буфером
@@ -184,19 +173,16 @@ async function start() {
       esp.on("message", (msg) => {
         if (Buffer.isBuffer(msg)) {
           if (oa.readyState === WebSocket.OPEN && openAIConnected) {
-            // Конвертируем 32-битный PCM в 16-битный PCM для OpenAI
-            const audio16Bit = convert32to16Bit(msg);
-            
-            // Отправляем аудио как input_audio_buffer.append только если OpenAI подключен
+            // ESP32 уже отправляет 16-битный PCM, так что просто пересылаем
             oa.send(JSON.stringify({
               type: "input_audio_buffer.append",
-              audio: audio16Bit.toString("base64")
+              audio: msg.toString("base64")
             }));
             
             audioChunksSent++;
             lastAudioTime = Date.now();
             if (audioChunksSent % 10 === 0) {
-              console.log(`📊 Sent ${audioChunksSent} audio chunks (${audio16Bit.length} bytes each)`);
+              console.log(`📊 Sent ${audioChunksSent} audio chunks (${msg.length} bytes each)`);
             }
           } else {
             // OpenAI еще не подключен - игнорируем чанки, чтобы не терять счетчик
