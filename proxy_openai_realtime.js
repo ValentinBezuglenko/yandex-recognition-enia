@@ -95,8 +95,7 @@ async function start() {
       // Переменные для управления состоянием и буферизации чанков
       let ready = false; // Флаг готовности сессии (после session.created)
       let pendingChunks = []; // Буфер для чанков, пришедших до готовности
-      let audioChunksSent = 0; // Счетчик отправленных аудио чанков
-      let lastChunkTime = 0; // Время последнего чанка
+      let audioBuffer = []; // Буфер для накопления чанков перед отправкой
       let autoCommitTimer = null; // Таймер для автоматического commit
 
       oa.on("open", () => {
@@ -117,48 +116,9 @@ async function start() {
             ready = true;
             // Отправляем все накопленные чанки
             if (pendingChunks.length > 0) {
-              console.log(`📤 Sending ${pendingChunks.length} pending chunks...`);
-              for (const chunk of pendingChunks) {
-                oa.send(JSON.stringify({
-                  type: "input_audio_buffer.append",
-                  audio: chunk.toString("base64")
-                }));
-                audioChunksSent++;
-              }
+              console.log(`📤 Merging ${pendingChunks.length} pending chunks into buffer...`);
+              audioBuffer.push(...pendingChunks);
               pendingChunks = [];
-              console.log(`✅ Sent ${audioChunksSent} total chunks`);
-              
-              // Если отправили достаточно чанков, устанавливаем таймер для автоматического commit
-              if (audioChunksSent >= 4) {
-                lastChunkTime = Date.now();
-                if (autoCommitTimer) {
-                  clearTimeout(autoCommitTimer);
-                }
-                autoCommitTimer = setTimeout(() => {
-                  if (oa.readyState === WebSocket.OPEN && ready && audioChunksSent > 0) {
-                    const chunksToCommit = audioChunksSent; // Сохраняем значение для логирования
-                    console.log(`⏰ Auto-committing ${chunksToCommit} chunks after 3s silence...`);
-                    // Добавляем небольшую задержку перед commit, чтобы убедиться, что все чанки обработаны
-                    setTimeout(() => {
-                      oa.send(JSON.stringify({
-                        type: "input_audio_buffer.commit"
-                      }));
-                      
-                      setTimeout(() => {
-                        console.log(`📤 Sending response.create...`);
-                        oa.send(JSON.stringify({
-                          type: "response.create",
-                          response: {
-                            modalities: ["text"]
-                          }
-                        }));
-                      }, 100);
-                      
-                      // НЕ сбрасываем счетчик здесь - он будет сброшен после успешного ответа
-                    }, 300); // Дополнительная задержка 300ms перед commit
-                  }
-                }, 3000); // Увеличена задержка до 3 секунд
-              }
             }
           }
           
@@ -178,8 +138,8 @@ async function start() {
           }
           if (parsed.type === "response.text.done") {
             console.log(`\n🎯 Text: "${parsed.text}"`);
-            // Сбрасываем счетчик и очищаем таймер после получения ответа
-            audioChunksSent = 0;
+            // Сбрасываем буфер и очищаем таймер после получения ответа
+            audioBuffer = [];
             if (autoCommitTimer) {
               clearTimeout(autoCommitTimer);
               autoCommitTimer = null;
@@ -208,6 +168,7 @@ async function start() {
         console.log("Close code:", code, "Reason:", reason.toString());
         ready = false;
         pendingChunks = [];
+        audioBuffer = [];
         if (autoCommitTimer) {
           clearTimeout(autoCommitTimer);
           autoCommitTimer = null;
@@ -216,6 +177,46 @@ async function start() {
           esp.close();
         }
       });
+
+      // Функция для отправки накопленного буфера одним большим чанком
+      function sendBufferedAudio() {
+        if (audioBuffer.length === 0 || oa.readyState !== WebSocket.OPEN || !ready) {
+          return;
+        }
+        
+        // Объединяем все чанки в один большой Buffer
+        const totalSize = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+        const combinedBuffer = Buffer.concat(audioBuffer, totalSize);
+        
+        console.log(`📤 Sending ${audioBuffer.length} chunks (${totalSize} bytes) as single buffer...`);
+        
+        // Отправляем весь буфер одним сообщением
+        oa.send(JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: combinedBuffer.toString("base64")
+        }));
+        
+        // Очищаем буфер после отправки
+        audioBuffer = [];
+        
+        // Делаем commit сразу после отправки
+        setTimeout(() => {
+          console.log(`📤 Sending input_audio_buffer.commit...`);
+          oa.send(JSON.stringify({
+            type: "input_audio_buffer.commit"
+          }));
+          
+          setTimeout(() => {
+            console.log(`📤 Sending response.create...`);
+            oa.send(JSON.stringify({
+              type: "response.create",
+              response: {
+                modalities: ["text"]
+              }
+            }));
+          }, 100);
+        }, 200); // Небольшая задержка для обработки
+      }
 
       // Пересылаем бинарные чанки от ESP → OpenAI
       esp.on("message", (msg) => {
@@ -234,14 +235,8 @@ async function start() {
             return;
           }
           
-          // Сессия готова - отправляем сразу
-          oa.send(JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: msg.toString("base64")
-          }));
-          
-          audioChunksSent++;
-          lastChunkTime = Date.now();
+          // Сессия готова - накапливаем чанки в буфере
+          audioBuffer.push(msg);
           
           // Очищаем предыдущий таймер
           if (autoCommitTimer) {
@@ -249,94 +244,39 @@ async function start() {
             autoCommitTimer = null;
           }
           
-          // Автоматический commit через 3 секунды после последнего чанка (если достаточно данных)
+          // Автоматическая отправка через 2 секунды после последнего чанка (если достаточно данных)
           // OpenAI требует минимум 100ms аудио, у нас 1024 байта = ~32ms при 16kHz, так что нужно минимум 4 чанка
-          if (audioChunksSent >= 4) {
+          if (audioBuffer.length >= 4) {
             autoCommitTimer = setTimeout(() => {
-              if (oa.readyState === WebSocket.OPEN && ready && audioChunksSent > 0) {
-                const chunksToCommit = audioChunksSent; // Сохраняем значение для логирования
-                console.log(`⏰ Auto-committing ${chunksToCommit} chunks after 3s silence...`);
-                // Добавляем небольшую задержку перед commit, чтобы убедиться, что все чанки обработаны
-                setTimeout(() => {
-                  oa.send(JSON.stringify({
-                    type: "input_audio_buffer.commit"
-                  }));
-                  
-                  setTimeout(() => {
-                    console.log(`📤 Sending response.create...`);
-                    oa.send(JSON.stringify({
-                      type: "response.create",
-                      response: {
-                        modalities: ["text"]
-                      }
-                    }));
-                  }, 100);
-                  
-                  // НЕ сбрасываем счетчик здесь - он будет сброшен после успешного ответа
-                }, 300); // Дополнительная задержка 300ms перед commit
-              }
-            }, 3000); // Увеличена задержка до 3 секунд
+              sendBufferedAudio();
+            }, 2000); // 2 секунды тишины
           }
           
-          if (audioChunksSent % 10 === 0) {
-            console.log(`📊 Sent ${audioChunksSent} audio chunks (${msg.length} bytes each)`);
+          if (audioBuffer.length % 10 === 0) {
+            console.log(`📊 Buffered ${audioBuffer.length} chunks (${audioBuffer.reduce((sum, ch) => sum + ch.length, 0)} bytes)`);
           }
         } else {
           const textMsg = msg.toString();
           console.log("📝 Text from ESP:", textMsg);
           
-          // Если получен сигнал остановки, отправляем commit и response.create
+          // Если получен сигнал остановки, отправляем накопленный буфер
           if (textMsg.includes("STREAM STOPPED") || textMsg.includes("STOP")) {
-            console.log(`🛑 Received stop signal. OpenAI ready: ${oa.readyState === WebSocket.OPEN}, session ready: ${ready}, chunks sent: ${audioChunksSent}`);
+            console.log(`🛑 Received stop signal. Buffered chunks: ${audioBuffer.length}, OpenAI ready: ${oa.readyState === WebSocket.OPEN}, session ready: ${ready}`);
             if (oa.readyState === WebSocket.OPEN && ready) {
-              // Проверяем, что есть аудио данные перед commit
-              if (audioChunksSent > 0 || pendingChunks.length > 0) {
-                // Если есть накопленные чанки, отправляем их сначала
-                if (pendingChunks.length > 0) {
-                  console.log(`📤 Sending ${pendingChunks.length} pending chunks before commit...`);
-                  for (const chunk of pendingChunks) {
-                    oa.send(JSON.stringify({
-                      type: "input_audio_buffer.append",
-                      audio: chunk.toString("base64")
-                    }));
-                    audioChunksSent++;
-                  }
-                  pendingChunks = [];
-                }
-                
-                // Очищаем автоматический таймер, так как делаем ручной commit
-                if (autoCommitTimer) {
-                  clearTimeout(autoCommitTimer);
-                  autoCommitTimer = null;
-                }
-                
-                const chunksToCommit = audioChunksSent; // Сохраняем значение для логирования
-                console.log(`📤 Committing ${chunksToCommit} audio chunks after stop signal`);
-                console.log(`⏳ Waiting 500ms before commit...`);
-                // Увеличиваем задержку перед commit, чтобы убедиться, что все последние аудио чанки доставлены
-                setTimeout(() => {
-                  console.log(`📤 Sending input_audio_buffer.commit...`);
-                  oa.send(JSON.stringify({
-                    type: "input_audio_buffer.commit"
-                  }));
-                  
-                  setTimeout(() => {
-                    console.log(`📤 Sending response.create...`);
-                    oa.send(JSON.stringify({
-                      type: "response.create",
-                      response: {
-                        modalities: ["text"]
-                      }
-                    }));
-                  }, 100);
-                  
-                  // НЕ сбрасываем счетчик здесь - он будет сброшен после успешного ответа
-                }, 500); // Увеличена задержка до 500ms перед commit
+              // Очищаем таймер
+              if (autoCommitTimer) {
+                clearTimeout(autoCommitTimer);
+                autoCommitTimer = null;
+              }
+              
+              // Отправляем накопленный буфер
+              if (audioBuffer.length > 0) {
+                sendBufferedAudio();
               } else {
                 console.log("⚠️  No audio data to commit");
               }
             } else {
-              console.log(`⚠️  Stop signal received but OpenAI not ready to commit (readyState: ${oa.readyState}, session ready: ${ready})`);
+              console.log(`⚠️  Stop signal received but OpenAI not ready (readyState: ${oa.readyState}, session ready: ${ready})`);
             }
           }
         }
