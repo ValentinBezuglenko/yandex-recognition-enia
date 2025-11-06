@@ -165,6 +165,7 @@ async function start() {
       // Счетчик отправленных аудио чанков для отслеживания количества данных
       let audioChunksSent = 0;
       let lastAudioTime = 0;
+      let openAIConnected = false; // Флаг подключения к OpenAI
 
       // Автоматически отправляем commit если нет активности более 3 секунд
       // Но только если было отправлено хотя бы немного аудио данных
@@ -200,8 +201,8 @@ async function start() {
       // Пересылаем бинарные чанки от ESP → OpenAI
       esp.on("message", (msg) => {
         if (Buffer.isBuffer(msg)) {
-          if (oa.readyState === WebSocket.OPEN) {
-            // Отправляем аудио как input_audio_buffer.append
+          if (oa.readyState === WebSocket.OPEN && openAIConnected) {
+            // Отправляем аудио как input_audio_buffer.append только если OpenAI подключен
             oa.send(JSON.stringify({
               type: "input_audio_buffer.append",
               audio: msg.toString("base64")
@@ -213,7 +214,8 @@ async function start() {
               console.log(`📊 Sent ${audioChunksSent} audio chunks`);
             }
           } else {
-            console.log("⚠️  Audio chunk received but OpenAI not connected");
+            // OpenAI еще не подключен - игнорируем чанки, чтобы не терять счетчик
+            console.log("⚠️  Audio chunk received but OpenAI not ready (connected: " + openAIConnected + ", readyState: " + oa.readyState + ")");
           }
         } else {
           const textMsg = msg.toString();
@@ -221,7 +223,7 @@ async function start() {
           
           // Если получен сигнал остановки, отправляем commit и response.create
           if (textMsg.includes("STREAM STOPPED") || textMsg.includes("STOP")) {
-            if (oa.readyState === WebSocket.OPEN) {
+            if (oa.readyState === WebSocket.OPEN && openAIConnected) {
               // Проверяем, что есть аудио данные перед commit
               if (audioChunksSent > 0) {
                 console.log(`📤 Committing ${audioChunksSent} audio chunks after stop signal`);
@@ -243,6 +245,8 @@ async function start() {
               } else {
                 console.log("⚠️  No audio data to commit");
               }
+            } else {
+              console.log("⚠️  Stop signal received but OpenAI not ready to commit");
             }
           }
         }
