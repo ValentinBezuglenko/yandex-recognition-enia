@@ -1,11 +1,15 @@
-// npm install ws axios
+// npm install ws axios fs
 import WebSocket, { WebSocketServer } from "ws";
 import axios from "axios";
+import fs from "fs";
+import path from "path";
 
 const PORT = process.env.PORT || 8765;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const RECORDINGS_DIR = "./recordings";
 
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
+if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR);
 
 //
 // === 1. Создание новой Realtime-сессии ===
@@ -42,6 +46,14 @@ async function start() {
   wss.on("connection", async (esp) => {
     console.log("✅ ESP connected");
     console.log("ESP IP:", esp._socket.remoteAddress);
+
+    // === Создаём файл для текущей сессии ===
+    const filename = path.join(
+      RECORDINGS_DIR,
+      `session_${new Date().toISOString().replace(/[:.]/g, "-")}.raw`
+    );
+    const fileStream = fs.createWriteStream(filename);
+    console.log(`🎙 Recording raw audio to: ${filename}`);
 
     try {
       //
@@ -95,10 +107,10 @@ async function start() {
       // === 6. OpenAI события ===
       //
       oa.on("open", () => {
-        console.log("🔗 Connected to OpenAI Realtime (session already active via REST)");
+        console.log("🔗 Connected to OpenAI Realtime (session via REST)");
         ready = true;
       });
-      
+
       oa.on("message", (data) => {
         const msg = data.toString();
         try {
@@ -107,15 +119,10 @@ async function start() {
           if (parsed.type === "session.created") {
             ready = true;
             console.log("🟢 OpenAI session ready");
-            if (pendingChunks.length) {
-              console.log(`📦 Flushing ${pendingChunks.length} pending chunks`);
-              audioBuffer.push(...pendingChunks);
-              pendingChunks = [];
-            }
           }
 
           if (parsed.type === "response.output_text.delta") {
-            console.log("💬 Partial:", parsed.delta);
+            console.log("💬", parsed.delta);
           }
 
           if (parsed.type === "response.completed") {
@@ -127,7 +134,7 @@ async function start() {
           }
 
           if (parsed.type.startsWith("response.")) {
-            esp.send(msg); // пересылаем ESP все ответы
+            esp.send(msg);
           }
         } catch (err) {
           console.error("⚠️ Parse error:", err.message);
@@ -142,6 +149,9 @@ async function start() {
       //
       esp.on("message", (msg) => {
         if (Buffer.isBuffer(msg)) {
+          // сохраняем входящее аудио в файл
+          fileStream.write(msg);
+
           if (!ready) {
             pendingChunks.push(msg);
             return;
@@ -187,6 +197,8 @@ async function start() {
 
       esp.on("close", () => {
         console.log("🔌 ESP disconnected");
+        fileStream.end();
+        console.log(`💾 Saved recording: ${filename}`);
         oa.close();
       });
 
@@ -194,6 +206,7 @@ async function start() {
 
     } catch (err) {
       console.error("❌ Setup error:", err.message);
+      fileStream.end();
       if (esp.readyState === WebSocket.OPEN) esp.close();
     }
   });
