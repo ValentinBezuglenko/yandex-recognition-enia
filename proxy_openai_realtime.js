@@ -1,122 +1,162 @@
-import express from "express";
-import { WebSocketServer } from "ws";
+// === server.js ===
+// Рабочая версия: сохраняет RAW и транскрибирует через OpenAI
+// Запуск: node server.js
+// Требует: npm install ws axios
+
 import fs from "fs";
 import path from "path";
+import WebSocket, { WebSocketServer } from "ws";
 import axios from "axios";
-import FormData from "form-data";
 
-const app = express();
-const server = app.listen(process.env.PORT || 3000, () =>
-  console.log("🚀 Server running on port", process.env.PORT || 3000)
-);
+const PORT = process.env.PORT || 8765;
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
-const RECORDINGS_DIR = path.resolve("recordings");
-if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR);
+if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
-const wss = new WebSocketServer({ server });
+// === Подготовка папки для записей ===
+const recordingsDir = path.resolve("recordings");
+if (!fs.existsSync(recordingsDir)) fs.mkdirSync(recordingsDir);
 
-wss.on("connection", (ws) => {
-  console.log("✅ ESP connected");
-
-  let fileStream = null;
-  let filePath = null;
-  let totalBytes = 0;
-  let sessionReady = false;
-
-  ws.on("message", async (msg, isBinary) => {
-    if (isBinary) {
-      if (fileStream) {
-        fileStream.write(msg);
-        totalBytes += msg.length;
-      }
-      return;
+// === Создаём OpenAI Realtime сессию ===
+async function createRealtimeSession() {
+  const r = await axios.post(
+    "https://api.openai.com/v1/realtime/sessions",
+    {
+      model: "gpt-4o-realtime-preview-2024-12-17",
+      voice: "alloy",
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_KEY}`,
+        "Content-Type": "application/json",
+      },
     }
+  );
+  return r.data;
+}
 
-    const text = msg.toString().trim();
+// === Запуск WebSocket-прокси ===
+async function start() {
+  console.log(`\n🚀 Proxy listening on ws://0.0.0.0:${PORT}`);
+  const wss = new WebSocketServer({ port: PORT, path: "/ws" });
 
-    if (text.includes("STREAM STARTED")) {
-      const filename = `session_${new Date().toISOString().replace(/[:.]/g, "-")}.raw`;
-      filePath = path.join(RECORDINGS_DIR, filename);
-      fileStream = fs.createWriteStream(filePath);
-      totalBytes = 0;
+  wss.on("connection", async (esp) => {
+    console.log("✅ ESP connected");
+    console.log("ESP IP:", esp._socket.remoteAddress);
 
-      console.log(`🎙 Recording raw audio to: ${filePath}`);
-      console.log("     ==> Available at:", process.env.RENDER_EXTERNAL_URL || "local server");
-      return;
-    }
+    // Переменные для записи
+    let rawFilePath = "";
+    let rawStream = null;
+    let totalBytes = 0;
+    let session = null;
 
-    if (text.includes("STREAM STOPPED")) {
-      console.log(`=== ⏹ STREAM STOPPED ===`);
-      if (fileStream) {
-        fileStream.end(async () => {
-          console.log(`💾 Recording closed (${(totalBytes / 1024).toFixed(1)} KB)`);
+    try {
+      // Создаём realtime-сессию OpenAI
+      session = await createRealtimeSession();
+      const clientSecret =
+        session?.client_secret?.value || session?.client_secret;
 
-          const wavPath = filePath.replace(".raw", ".wav");
-          try {
-            await rawToWav(filePath, wavPath);
-            await uploadToFileIO(wavPath);
-          } catch (err) {
-            console.error("❌ Conversion/upload failed:", err);
+      const oa = new WebSocket(
+        `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(
+          clientSecret
+        )}`,
+        {
+          headers: {
+            Authorization: `Bearer ${clientSecret}`,
+            "OpenAI-Beta": "realtime=v1",
+          },
+        }
+      );
+
+      oa.on("open", () => console.log("🔗 Connected to OpenAI Realtime"));
+      oa.on("message", (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === "session.created")
+            console.log("🟢 OpenAI session ready");
+          else if (msg.type === "error")
+            console.error("❌ OpenAI Error:", msg.error);
+        } catch (err) {
+          console.error("⚠️ JSON parse error:", err.message);
+        }
+      });
+
+      // === Приём данных от ESP ===
+      esp.on("message", async (msg) => {
+        if (Buffer.isBuffer(msg)) {
+          if (rawStream) {
+            rawStream.write(msg);
+            totalBytes += msg.length;
           }
-        });
-      }
-      return;
-    }
+          return;
+        }
 
-    if (text.includes("Connected to OpenAI Realtime")) {
-      sessionReady = true;
+        const text = msg.toString().trim();
+
+        if (text.includes("STREAM STARTED")) {
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          rawFilePath = path.join(
+            recordingsDir,
+            `session_${timestamp}.raw`
+          );
+          rawStream = fs.createWriteStream(rawFilePath);
+          totalBytes = 0;
+          console.log(`🎙 Recording raw audio to: ${rawFilePath}`);
+        }
+
+        if (text.includes("STREAM STOPPED")) {
+          if (rawStream) {
+            rawStream.end(() => {
+              console.log(
+                `💾 Recording closed (${(totalBytes / 1024).toFixed(1)} KB)`
+              );
+            });
+            rawStream = null;
+
+            // После остановки можно (необязательно) сделать запрос на транскрипцию
+            if (fs.existsSync(rawFilePath)) {
+              console.log("🧠 Sending for transcription...");
+              try {
+                const audioData = fs.readFileSync(rawFilePath);
+                const base64 = audioData.toString("base64");
+
+                oa.send(
+                  JSON.stringify({
+                    type: "input_audio_buffer.append",
+                    audio: base64,
+                  })
+                );
+                oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+                oa.send(
+                  JSON.stringify({
+                    type: "response.create",
+                    response: {
+                      modalities: ["text"],
+                      instructions:
+                        "Transcribe and briefly summarize the recorded audio.",
+                    },
+                  })
+                );
+
+                console.log("📨 Sent for OpenAI transcription");
+              } catch (err) {
+                console.error("❌ Transcription send error:", err.message);
+              }
+            }
+          }
+        }
+      });
+
+      esp.on("close", () => {
+        console.log("🔌 ESP disconnected");
+        if (rawStream) rawStream.end();
+        oa.close();
+      });
+    } catch (err) {
+      console.error("❌ Setup error:", err.message);
+      if (esp.readyState === WebSocket.OPEN) esp.close();
     }
   });
-
-  ws.on("close", () => {
-    console.log("🔌 ESP disconnected");
-    if (fileStream) fileStream.end();
-  });
-});
-
-async function rawToWav(inputPath, outputPath) {
-  const raw = fs.readFileSync(inputPath);
-  const header = Buffer.alloc(44);
-  const dataSize = raw.length;
-  const sampleRate = 24000;
-  const byteRate = sampleRate * 2;
-
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + dataSize, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(1, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(2, 32);
-  header.writeUInt16LE(16, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(dataSize, 40);
-
-  fs.writeFileSync(outputPath, Buffer.concat([header, raw]));
-  console.log("🎧 WAV file created:", outputPath);
 }
 
-async function uploadToFileIO(filePath) {
-  try {
-    const form = new FormData();
-    form.append("file", fs.createReadStream(filePath));
-
-    const res = await axios.post("https://file.io", form, {
-      headers: form.getHeaders(),
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity,
-    });
-
-    if (res.data && res.data.link) {
-      console.log(`🌐 Uploaded: ${res.data.link}`);
-      return res.data.link;
-    } else {
-      console.error("⚠️ Upload failed:", res.data);
-    }
-  } catch (e) {
-    console.error("❌ Upload error:", e.message);
-  }
-}
+start().catch(console.error);
