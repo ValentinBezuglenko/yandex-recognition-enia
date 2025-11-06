@@ -95,18 +95,10 @@ async function start() {
       // === 6. OpenAI события ===
       //
       oa.on("open", () => {
-        console.log("🔗 Connected to OpenAI Realtime");
-
-        // ⚙️ Сразу отправляем session.create, иначе OpenAI будет молчать
-        oa.send(JSON.stringify({
-          type: "session.create",
-          session: {
-            modalities: ["audio", "text"],
-            voice: "alloy",
-          },
-        }));
+        console.log("🔗 Connected to OpenAI Realtime (session already active via REST)");
+        ready = true;
       });
-
+      
       oa.on("message", (data) => {
         const msg = data.toString();
         try {
