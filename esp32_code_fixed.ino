@@ -51,14 +51,15 @@ void IRAM_ATTR buttonISR() {
 
 // ---------- I2S ----------
 void setupI2S() {
-  i2s_driver_uninstall(I2S_PORT);
+  // Пытаемся удалить драйвер только если он уже установлен (чтобы избежать предупреждения)
+  i2s_driver_uninstall(I2S_PORT);  // Это безопасно даже если драйвер не установлен
 
   i2s_config_t i2s_config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
     .sample_rate = SAMPLE_RATE,
     .bits_per_sample = (i2s_bits_per_sample_t)SAMPLE_BITS,
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-    .communication_format = I2S_COMM_FORMAT_I2S_MSB,  // Исправлено
+    .communication_format = I2S_COMM_FORMAT_I2S_MSB,
     .intr_alloc_flags = 0,
     .dma_buf_count = DMA_BUF_COUNT,
     .dma_buf_len = BUFFER_SIZE / 2,  // Для 16-битных данных
