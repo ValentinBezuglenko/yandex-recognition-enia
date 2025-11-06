@@ -172,18 +172,21 @@ async function start() {
           // Если прошло более 3 секунд после последнего аудио и было отправлено хотя бы 10 чанков
           if (timeSinceLastAudio > 3000 && audioChunksSent >= 10 && lastAudioTime > 0) {
             console.log(`⏰ Auto-committing after ${timeSinceLastAudio}ms of silence (${audioChunksSent} chunks)`);
-            oa.send(JSON.stringify({
-              type: "input_audio_buffer.commit"
-            }));
-            
+            // Небольшая задержка перед commit, чтобы убедиться, что все чанки доставлены
             setTimeout(() => {
               oa.send(JSON.stringify({
-                type: "response.create",
-                response: {
-                  modalities: ["text"]
-                }
+                type: "input_audio_buffer.commit"
               }));
-            }, 100);
+              
+              setTimeout(() => {
+                oa.send(JSON.stringify({
+                  type: "response.create",
+                  response: {
+                    modalities: ["text"]
+                  }
+                }));
+              }, 100);
+            }, 200); // 200ms задержка перед commit
             
             // Сбрасываем счетчик после commit
             audioChunksSent = 0;
@@ -219,19 +222,22 @@ async function start() {
             if (oa.readyState === WebSocket.OPEN) {
               // Проверяем, что есть аудио данные перед commit
               if (audioChunksSent > 0) {
-                console.log(`📤 Committing ${audioChunksSent} audio chunks`);
-                oa.send(JSON.stringify({
-                  type: "input_audio_buffer.commit"
-                }));
-                
+                console.log(`📤 Committing ${audioChunksSent} audio chunks after stop signal`);
+                // Небольшая задержка, чтобы убедиться, что все последние аудио чанки доставлены
                 setTimeout(() => {
                   oa.send(JSON.stringify({
-                    type: "response.create",
-                    response: {
-                      modalities: ["text"]
-                    }
+                    type: "input_audio_buffer.commit"
                   }));
-                }, 100);
+                  
+                  setTimeout(() => {
+                    oa.send(JSON.stringify({
+                      type: "response.create",
+                      response: {
+                        modalities: ["text"]
+                      }
+                    }));
+                  }, 100);
+                }, 200); // 200ms задержка перед commit
               } else {
                 console.log("⚠️  No audio data to commit");
               }
