@@ -1,47 +1,27 @@
-// npm install ws axios https-proxy-agent http-proxy-agent
+// npm install ws axios
 import WebSocket, { WebSocketServer } from "ws";
 import axios from "axios";
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { HttpProxyAgent } from 'http-proxy-agent';
 
 const PORT = process.env.PORT || 8765;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
-
-// Для обхода географических ограничений - укажите прокси в формате http://host:port или https://host:port
-// Примеры:
-// const PROXY_URL = "http://proxy.example.com:8080";
-// const PROXY_URL = "socks5://proxy.example.com:1080";
-// Или используйте переменные окружения: HTTP_PROXY, HTTPS_PROXY, PROXY_URL
-const PROXY_URL = process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.PROXY_URL;
-// const PROXY_URL = "http://your-proxy-host:port"; // Раскомментируйте и укажите ваш прокси здесь
 
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
 // Создаёт новую Realtime-сессию
 async function createRealtimeSession() {
   try {
-    const config = {
-      headers: {
-        "Authorization": `Bearer ${OPENAI_KEY}`,
-        "Content-Type": "application/json",
-      },
-    };
-
-    // Добавляем прокси для HTTP запросов, если указан
-    if (PROXY_URL) {
-      const ProxyAgent = PROXY_URL.startsWith('https') ? HttpsProxyAgent : HttpProxyAgent;
-      config.httpAgent = new ProxyAgent(PROXY_URL);
-      config.httpsAgent = new ProxyAgent(PROXY_URL);
-      console.log(`🌐 Using proxy: ${PROXY_URL}`);
-    }
-
     const response = await axios.post(
       "https://api.openai.com/v1/realtime/sessions",
       {
         model: "gpt-4o-realtime-preview-2024-12-17",
         voice: "alloy",
       },
-      config
+      {
+        headers: {
+          "Authorization": `Bearer ${OPENAI_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
     );
     console.log("OpenAI API Response:", JSON.stringify(response.data, null, 2));
     return response.data;
@@ -52,10 +32,8 @@ async function createRealtimeSession() {
       console.error(`Data:`, JSON.stringify(error.response.data, null, 2));
       if (error.response.status === 403) {
         console.error("\n⚠️  Ошибка 403: Доступ запрещен. Возможные причины:");
-        console.error("   - Географические ограничения");
         console.error("   - Неверный API ключ");
         console.error("   - Недостаточно прав у API ключа");
-        console.error("\n💡 Решение: Используйте VPN или HTTP/HTTPS прокси для обхода географических ограничений.");
       }
     } else {
       console.error(error.message);
@@ -107,23 +85,12 @@ async function start() {
       console.log("WebSocket URL:", wsUrl.substring(0, 100) + "..."); // Не логируем полный URL с токеном
 
       // OpenAI требует Authorization header с client_secret токеном для WebSocket
-      const wsOptions = {
+      const oa = new WebSocket(wsUrl, {
         headers: { 
           Authorization: `Bearer ${clientSecretToken}`,
           "OpenAI-Beta": "realtime=v1"
         },
-      };
-
-      // Добавляем прокси для WebSocket соединения, если указан
-      if (PROXY_URL) {
-        const ProxyAgent = PROXY_URL.startsWith('https') || PROXY_URL.startsWith('wss') 
-          ? HttpsProxyAgent 
-          : HttpProxyAgent;
-        wsOptions.agent = new ProxyAgent(PROXY_URL);
-        console.log(`🌐 Using proxy for WebSocket: ${PROXY_URL}`);
-      }
-
-      const oa = new WebSocket(wsUrl, wsOptions);
+      });
 
       // Переменные для управления состоянием и буферизации чанков
       let ready = false; // Флаг готовности сессии (после session.created)
