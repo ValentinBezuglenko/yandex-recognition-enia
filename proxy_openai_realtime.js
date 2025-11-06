@@ -53,13 +53,6 @@ async function start() {
   wss.on("connection", async (esp) => {
     console.log("✅ ESP connected");
     console.log("ESP IP:", esp._socket.remoteAddress);
-    
-    // Отправляем подтверждение подключения сразу
-    try {
-      esp.send(JSON.stringify({ type: "connection.ack", event: "connected" }));
-    } catch (e) {
-      console.error("Failed to send ack:", e.message);
-    }
 
     try {
       // создаём сессию Realtime и открываем WS к OpenAI
@@ -314,14 +307,6 @@ async function start() {
     } catch (error) {
       console.error("❌ Error setting up connection:", error.message);
       console.error("Error stack:", error.stack);
-      try {
-        esp.send(JSON.stringify({ 
-          type: "error", 
-          error: error.message 
-        }));
-      } catch (sendError) {
-        console.error("Failed to send error to ESP:", sendError.message);
-      }
       setTimeout(() => {
         if (esp.readyState === WebSocket.OPEN) {
           esp.close();
