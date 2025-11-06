@@ -2,8 +2,14 @@
 import WebSocket, { WebSocketServer } from "ws";
 import axios from "axios";
 
-const PORT = process.env.PORT || 10000;
+const PORT = 10000;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const SAMPLE_RATE = 24000; // Гц
+const BYTES_PER_SAMPLE = 2; // PCM16
+const MIN_SEC = 2;          // Минимум 2 секунды для отправки
+const MIN_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * MIN_SEC;
+const CHUNK_SIZE = 32 * 1024; // 32 KB
+
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
 async function createRealtimeSession() {
@@ -15,112 +21,108 @@ async function createRealtimeSession() {
   return response.data;
 }
 
-async function start() {
-  console.log(`🚀 Proxy listening on ws://0.0.0.0:${PORT}`);
-  const wss = new WebSocketServer({ port: PORT, path: "/ws" });
+let audioBuffer = [];
 
-  wss.on("connection", async (esp) => {
-    console.log("✅ ESP connected", esp._socket.remoteAddress);
+const wss = new WebSocketServer({ port: PORT, path: "/ws" });
+console.log(`🚀 Proxy server listening on ws://0.0.0.0:${PORT}`);
 
-    try {
-      const session = await createRealtimeSession();
-      const clientSecret = session?.client_secret?.value || session?.client_secret;
-      if (!clientSecret) throw new Error("No client_secret in OpenAI response");
+wss.on("connection", async (esp, req) => {
+  console.log("✅ ESP connected", req.socket.remoteAddress);
 
-      const oa = new WebSocket(
-        `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(clientSecret)}`,
-        { headers: { Authorization: `Bearer ${clientSecret}`, "OpenAI-Beta": "realtime=v1" } }
-      );
+  try {
+    const session = await createRealtimeSession();
+    const clientSecret = session?.client_secret?.value || session?.client_secret;
+    if (!clientSecret) throw new Error("No client_secret from OpenAI");
 
-      // --- состояние ---
-      let ready = false;
-      let audioBuffer = [];
-      const MAX_CHUNK_SIZE = 32768; // 32 KB
+    const oa = new WebSocket(
+      `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(clientSecret)}`,
+      { headers: { Authorization: `Bearer ${clientSecret}`, "OpenAI-Beta": "realtime=v1" } }
+    );
 
-      function flushAudioBuffer(force = false) {
-        if (audioBuffer.length === 0 || oa.readyState !== WebSocket.OPEN) return;
+    let ready = false;
+    let flushTimer = null;
 
-        let buffer = Buffer.concat(audioBuffer);
-        while (buffer.length > 0) {
-          const sendSize = Math.min(MAX_CHUNK_SIZE, buffer.length);
-          const chunk = buffer.slice(0, sendSize);
-          oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: chunk.toString("base64") }));
-          console.log(`📤 Sent chunk: ${sendSize} bytes`);
-          buffer = buffer.slice(sendSize);
-        }
-        audioBuffer = [];
+    function flushAudioBuffer(force = false) {
+      if (!ready || audioBuffer.length === 0 || oa.readyState !== WebSocket.OPEN) return;
+
+      const full = Buffer.concat(audioBuffer);
+      if (!force && full.length < MIN_BYTES) {
+        console.log(`⏳ Buffer too small (${full.length} bytes), waiting for 2s`);
+        return;
       }
 
-      // --- события OpenAI ---
-      oa.on("open", () => console.log("🔗 Connected to OpenAI Realtime"));
+      // Разбиваем на чанки по 32 KB
+      let offset = 0;
+      while (offset < full.length) {
+        const end = Math.min(offset + CHUNK_SIZE, full.length);
+        const chunk = full.slice(offset, end);
+        const base64 = chunk.toString("base64");
+        oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
+        offset = end;
+      }
 
-      oa.on("message", (data) => {
-        try {
-          const parsed = JSON.parse(data.toString());
-          if (parsed.type === "session.created") {
-            console.log("🟢 OpenAI session ready");
-            ready = true;
-          }
-          if (parsed.type === "response.output_text.delta") process.stdout.write(parsed.delta);
-          if (parsed.type === "response.completed") console.log("\n✅ Transcription complete\n");
-          if (parsed.type === "error") console.error("❌ OpenAI Error:", parsed.error);
-        } catch (err) { console.error("⚠️ Parse error:", err.message); }
-      });
+      oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+      console.log(`📤 Sent ${full.length} bytes to OpenAI in ${Math.ceil(full.length / CHUNK_SIZE)} chunks`);
 
-      oa.on("close", () => console.log("🔌 OpenAI closed"));
-      oa.on("error", (e) => console.error("❌ OpenAI WS Error:", e.message));
+      audioBuffer = [];
+      clearTimeout(flushTimer);
+      flushTimer = null;
 
-      // --- получение данных от ESP ---
-      esp.on("message", (msg) => {
-        if (!ready) return;
-
-        if (Buffer.isBuffer(msg)) {
-          audioBuffer.push(msg);
-          if (Buffer.concat(audioBuffer).length >= MAX_CHUNK_SIZE) flushAudioBuffer();
-          return;
-        }
-
-        const text = msg.toString().trim();
-        if (text.includes("STREAM_STOPPED")) {
-          flushAudioBuffer(true);
-          if (oa.readyState === WebSocket.OPEN) {
-            oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            oa.send(JSON.stringify({
-              type: "response.create",
-              response: { modalities: ["text"], instructions: "Return only transcription" }
-            }));
-            console.log("📨 Commit + response.create sent");
-          }
-        }
-
-        if (text.includes("STREAM_STARTED")) {
-          audioBuffer = [];
-          console.log("🎙 Stream started");
-        }
-      });
-
-      // --- ESP отключился ---
-      esp.on("close", () => {
-        console.log("🔌 ESP disconnected, flushing remaining buffer");
-        flushAudioBuffer(true);
-        if (oa.readyState === WebSocket.OPEN) {
-          oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          oa.send(JSON.stringify({
-            type: "response.create",
-            response: { modalities: ["text"], instructions: "Return only transcription" }
-          }));
-          console.log("📨 Commit + response.create sent after ESP disconnect");
-        }
-        oa.close();
-      });
-
-      esp.on("error", (e) => console.error("❌ ESP error:", e.message));
-
-    } catch (err) {
-      console.error("❌ Setup error:", err.message);
-      if (esp.readyState === WebSocket.OPEN) esp.close();
+      // Создаём транскрипт
+      oa.send(JSON.stringify({
+        type: "response.create",
+        response: { modalities: ["text"], instructions: "Return only transcription" }
+      }));
     }
-  });
-}
 
-start().catch(console.error);
+    oa.on("open", () => console.log("🔗 Connected to OpenAI Realtime"));
+    oa.on("message", (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === "session.created") {
+        ready = true;
+        console.log("🟢 OpenAI session ready");
+      }
+      if (msg.type === "response.output_text.delta") process.stdout.write(msg.delta);
+      if (msg.type === "response.completed") console.log("\n✅ Transcription complete\n");
+      if (msg.type === "error") console.error("❌ OpenAI Error:", msg.error);
+    });
+    oa.on("close", () => console.log("🔌 OpenAI closed"));
+    oa.on("error", (e) => console.error("❌ OpenAI WS Error:", e.message));
+
+    esp.on("message", (msg) => {
+      const text = msg.toString("utf8");
+
+      if (text.includes("STREAM_STARTED")) {
+        audioBuffer = [];
+        flushTimer = null;
+        console.log("🎙 Stream started");
+        return;
+      }
+
+      if (text.includes("STREAM_STOPPED") || text.includes("STREAM STOPPED")) {
+        flushAudioBuffer(true);
+        return;
+      }
+
+      // Если это аудио — добавляем в буфер
+      if (Buffer.isBuffer(msg)) {
+        audioBuffer.push(msg);
+        clearTimeout(flushTimer);
+        flushTimer = setTimeout(() => flushAudioBuffer(), 2000); // принудительный flush через 2с
+        console.log(`🎧 Got ${msg.length} bytes from ESP`);
+      }
+    });
+
+    esp.on("close", () => {
+      console.log("🔌 ESP disconnected — flushing buffer");
+      flushAudioBuffer(true);
+      oa.close();
+    });
+
+    esp.on("error", (e) => console.error("❌ ESP error:", e.message));
+
+  } catch (err) {
+    console.error("❌ Setup error:", err.message);
+    if (esp.readyState === WebSocket.OPEN) esp.close();
+  }
+});
