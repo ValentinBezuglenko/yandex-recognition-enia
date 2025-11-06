@@ -29,16 +29,15 @@ async function start() {
       const clientSecret = session?.client_secret?.value || session?.client_secret;
       if (!clientSecret) throw new Error("No client_secret in OpenAI response");
 
-      const oa = new WebSocket(`wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(clientSecret)}`, {
-        headers: { Authorization: `Bearer ${clientSecret}`, "OpenAI-Beta": "realtime=v1" }
-      });
+      const oa = new WebSocket(
+        `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&client_secret=${encodeURIComponent(clientSecret)}`,
+        { headers: { Authorization: `Bearer ${clientSecret}`, "OpenAI-Beta": "realtime=v1" } }
+      );
 
       // --- состояние ---
       let ready = false;
       let audioBuffer = [];
       let flushTimer = null;
-      let lastFlushTime = 0;
-      let lastFlushSize = 0;
       const SAMPLE_RATE = 24000; // Hz
       const BYTES_PER_SAMPLE = 2; // PCM16
       const MIN_SEC = 2; // минимум 2 секунды
@@ -56,13 +55,34 @@ async function start() {
 
         const base64 = full.toString("base64");
         oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
+
         audioBuffer = [];
-        lastFlushTime = Date.now();
-        lastFlushSize = full.length;
         clearTimeout(flushTimer);
         flushTimer = null;
 
-        console.log(`📤 Sent ${lastFlushSize} bytes to OpenAI`);
+        console.log(`📤 Sent ${full.length} bytes to OpenAI`);
+      }
+
+      // --- commit + response.create после накопления достаточного аудио ---
+      function tryCommit() {
+        const full = Buffer.concat(audioBuffer);
+        if (full.length < MIN_BYTES) {
+          console.log(`⏳ Buffer too small (${full.length} bytes), waiting for 2s of audio`);
+          return;
+        }
+
+        const base64 = full.toString("base64");
+        oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
+        oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+        oa.send(JSON.stringify({
+          type: "response.create",
+          response: { modalities: ["text"], instructions: "Return only transcription" }
+        }));
+
+        console.log(`📤 Sent ${full.length} bytes + commit + response.create`);
+        audioBuffer = [];
+        clearTimeout(flushTimer);
+        flushTimer = null;
       }
 
       // --- события OpenAI ---
@@ -99,21 +119,11 @@ async function start() {
 
         const text = msg.toString().trim();
         if (text.includes("STREAM_STOPPED")) {
-          flushAudioBuffer();
-          if (lastFlushSize > 0) {
-            oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            oa.send(JSON.stringify({
-              type: "response.create",
-              response: { modalities: ["text"], instructions: "Return only transcription" }
-            }));
-            lastFlushSize = 0;
-            console.log("📨 Commit + response.create sent");
-          }
+          tryCommit();
         }
         if (text.includes("STREAM_STARTED")) {
           audioBuffer = [];
           flushTimer = null;
-          lastFlushSize = 0;
           console.log("🎙 Stream started");
         }
       });
