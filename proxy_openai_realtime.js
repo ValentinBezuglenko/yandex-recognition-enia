@@ -125,21 +125,51 @@ async function start() {
 
       const oa = new WebSocket(wsUrl, wsOptions);
 
+      // Переменные для управления состоянием и буферизации чанков
+      let ready = false; // Флаг готовности сессии (после session.created)
+      let pendingChunks = []; // Буфер для чанков, пришедших до готовности
+      let audioChunksSent = 0; // Счетчик отправленных аудио чанков
+
       oa.on("open", () => {
         console.log("✅ Connected to OpenAI Realtime");
-        openAIConnected = true; // Устанавливаем флаг подключения
-        // Сессия уже инициализирована через API, дополнительных действий не требуется
+        // Ждем session.created перед установкой ready = true
       });
 
       oa.on("message", (data) => {
         const msg = data.toString();
-        console.log("<<<", msg.slice(0, 200)); // Увеличил до 200 символов для полного сообщения об ошибке
+        console.log("<<<", msg.slice(0, 200));
         
-        // Если это ошибка, логируем полностью
         try {
           const parsed = JSON.parse(msg);
+          
+          // Проверяем готовность сессии
+          if (parsed.type === "session.created") {
+            console.log("🟢 OpenAI session ready");
+            ready = true;
+            // Отправляем все накопленные чанки
+            if (pendingChunks.length > 0) {
+              console.log(`📤 Sending ${pendingChunks.length} pending chunks...`);
+              for (const chunk of pendingChunks) {
+                oa.send(JSON.stringify({
+                  type: "input_audio_buffer.append",
+                  audio: chunk.toString("base64")
+                }));
+                audioChunksSent++;
+              }
+              pendingChunks = [];
+              console.log(`✅ Sent ${audioChunksSent} total chunks`);
+            }
+          }
+          
           if (parsed.type === "error") {
             console.error("❌ OpenAI Error:", JSON.stringify(parsed, null, 2));
+          }
+          
+          if (parsed.type === "response.text.delta") {
+            process.stdout.write(parsed.delta);
+          }
+          if (parsed.type === "response.text.done") {
+            console.log(`\n🎯 Text: "${parsed.text}"`);
           }
         } catch (e) {
           // Не JSON, просто логируем
@@ -155,38 +185,39 @@ async function start() {
       oa.on("close", (code, reason) => {
         console.log("🔌 OpenAI WebSocket closed");
         console.log("Close code:", code, "Reason:", reason.toString());
-        openAIConnected = false; // Сбрасываем флаг подключения
+        ready = false;
+        pendingChunks = [];
         if (esp.readyState === WebSocket.OPEN) {
           esp.close();
         }
       });
 
-      // Счетчик отправленных аудио чанков для отслеживания количества данных
-      let audioChunksSent = 0;
-      let lastAudioTime = 0;
-      let openAIConnected = false; // Флаг подключения к OpenAI
-
-      // УБРАЛИ автоматический commit по таймауту - теперь commit только при явной остановке от ESP32
-      // Это предотвращает ошибки с пустым буфером
-
       // Пересылаем бинарные чанки от ESP → OpenAI
       esp.on("message", (msg) => {
         if (Buffer.isBuffer(msg)) {
-          if (oa.readyState === WebSocket.OPEN && openAIConnected) {
-            // ESP32 уже отправляет 16-битный PCM, так что просто пересылаем
-            oa.send(JSON.stringify({
-              type: "input_audio_buffer.append",
-              audio: msg.toString("base64")
-            }));
-            
-            audioChunksSent++;
-            lastAudioTime = Date.now();
-            if (audioChunksSent % 10 === 0) {
-              console.log(`📊 Sent ${audioChunksSent} audio chunks (${msg.length} bytes each)`);
+          if (oa.readyState !== WebSocket.OPEN) {
+            console.log("⚠️  Audio chunk received but OpenAI WS not open");
+            return;
+          }
+          
+          if (!ready) {
+            // Сессия еще не готова - сохраняем в буфер
+            pendingChunks.push(msg);
+            if (pendingChunks.length % 10 === 0) {
+              console.log(`📦 Buffered ${pendingChunks.length} chunks (waiting for session.created)`);
             }
-          } else {
-            // OpenAI еще не подключен - игнорируем чанки, чтобы не терять счетчик
-            console.log("⚠️  Audio chunk received but OpenAI not ready (connected: " + openAIConnected + ", readyState: " + oa.readyState + ")");
+            return;
+          }
+          
+          // Сессия готова - отправляем сразу
+          oa.send(JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: msg.toString("base64")
+          }));
+          
+          audioChunksSent++;
+          if (audioChunksSent % 10 === 0) {
+            console.log(`📊 Sent ${audioChunksSent} audio chunks (${msg.length} bytes each)`);
           }
         } else {
           const textMsg = msg.toString();
@@ -194,10 +225,23 @@ async function start() {
           
           // Если получен сигнал остановки, отправляем commit и response.create
           if (textMsg.includes("STREAM STOPPED") || textMsg.includes("STOP")) {
-            console.log(`🛑 Received stop signal. OpenAI ready: ${oa.readyState === WebSocket.OPEN}, connected: ${openAIConnected}, chunks sent: ${audioChunksSent}`);
-            if (oa.readyState === WebSocket.OPEN && openAIConnected) {
+            console.log(`🛑 Received stop signal. OpenAI ready: ${oa.readyState === WebSocket.OPEN}, session ready: ${ready}, chunks sent: ${audioChunksSent}`);
+            if (oa.readyState === WebSocket.OPEN && ready) {
               // Проверяем, что есть аудио данные перед commit
-              if (audioChunksSent > 0) {
+              if (audioChunksSent > 0 || pendingChunks.length > 0) {
+                // Если есть накопленные чанки, отправляем их сначала
+                if (pendingChunks.length > 0) {
+                  console.log(`📤 Sending ${pendingChunks.length} pending chunks before commit...`);
+                  for (const chunk of pendingChunks) {
+                    oa.send(JSON.stringify({
+                      type: "input_audio_buffer.append",
+                      audio: chunk.toString("base64")
+                    }));
+                    audioChunksSent++;
+                  }
+                  pendingChunks = [];
+                }
+                
                 console.log(`📤 Committing ${audioChunksSent} audio chunks after stop signal`);
                 console.log(`⏳ Waiting 500ms before commit...`);
                 // Увеличиваем задержку перед commit, чтобы убедиться, что все последние аудио чанки доставлены
@@ -221,7 +265,7 @@ async function start() {
                 console.log("⚠️  No audio data to commit");
               }
             } else {
-              console.log(`⚠️  Stop signal received but OpenAI not ready to commit (readyState: ${oa.readyState}, connected: ${openAIConnected})`);
+              console.log(`⚠️  Stop signal received but OpenAI not ready to commit (readyState: ${oa.readyState}, session ready: ${ready})`);
             }
           }
         }
