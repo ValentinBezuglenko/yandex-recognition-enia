@@ -7,15 +7,11 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
-//
-// === 1. Создание новой Realtime-сессии ===
-//
 async function createRealtimeSession() {
   const response = await axios.post(
     "https://api.openai.com/v1/realtime/sessions",
     {
       model: "gpt-4o-realtime-preview-2024-12-17",
-      voice: "alloy",
     },
     {
       headers: {
@@ -24,13 +20,9 @@ async function createRealtimeSession() {
       },
     }
   );
-
   return response.data;
 }
 
-//
-// === 2. Запуск локального WebSocket-сервера ===
-//
 async function start() {
   console.log(`\n🚀 Proxy listening on ws://0.0.0.0:${PORT}`);
   if (process.env.RENDER_SERVICE_NAME) {
@@ -44,9 +36,6 @@ async function start() {
     console.log("ESP IP:", esp._socket.remoteAddress);
 
     try {
-      //
-      // === 3. Создаём Realtime-сессию ===
-      //
       const session = await createRealtimeSession();
       const clientSecret = session?.client_secret?.value || session?.client_secret;
       if (!clientSecret) throw new Error("No client_secret in OpenAI response");
@@ -60,9 +49,6 @@ async function start() {
         },
       });
 
-      //
-      // === 4. Переменные состояния ===
-      //
       let ready = false;
       let pendingChunks = [];
       let audioBuffer = [];
@@ -70,35 +56,21 @@ async function start() {
       const FLUSH_THRESHOLD = 8;
       const FLUSH_INTERVAL = 200;
 
-      //
-      // === 5. Функция буферной отправки ===
-      //
       function flushAudioBuffer() {
         if (audioBuffer.length === 0 || oa.readyState !== WebSocket.OPEN || !ready) return;
-
         const full = Buffer.concat(audioBuffer);
         const base64 = full.toString("base64");
-
-        oa.send(JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: base64,
-        }));
-
+        oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
         console.log(`📤 Sent batch: ${audioBuffer.length} chunks (${full.length} bytes)`);
         audioBuffer = [];
-
         clearTimeout(flushTimer);
         flushTimer = null;
       }
 
-      //
-      // === 6. OpenAI события ===
-      //
       oa.on("open", () => {
-        console.log("🔗 Connected to OpenAI Realtime (session already active via REST)");
+        console.log("🔗 Connected to OpenAI Realtime");
         ready = true;
       });
-
 
       oa.on("message", (data) => {
         const msg = data.toString();
@@ -108,27 +80,19 @@ async function start() {
           if (parsed.type === "session.created") {
             ready = true;
             console.log("🟢 OpenAI session ready");
-            if (pendingChunks.length) {
-              console.log(`📦 Flushing ${pendingChunks.length} pending chunks`);
-              audioBuffer.push(...pendingChunks);
-              pendingChunks = [];
-            }
           }
 
-          if (parsed.type === "response.output_text.delta") {
+          // --- Выводим транскрипцию ---
+          if (parsed.type === "response.output_text.delta" && parsed.delta) {
             console.log("💬 Partial:", parsed.delta);
           }
-
-          if (parsed.type === "response.completed") {
-            console.log("✅ Response complete");
+          if (parsed.type === "response.output_text.done") {
+            console.log("✅ Final transcription:", parsed.output[0].content[0].text);
+            esp.send(parsed.output[0].content[0].text);
           }
 
           if (parsed.type === "error") {
             console.error("❌ OpenAI Error:", parsed.error);
-          }
-
-          if (parsed.type.startsWith("response.")) {
-            esp.send(msg); // пересылаем ESP все ответы
           }
         } catch (err) {
           console.error("⚠️ Parse error:", err.message);
@@ -138,9 +102,6 @@ async function start() {
       oa.on("close", () => console.log("🔌 OpenAI closed"));
       oa.on("error", (e) => console.error("❌ OpenAI WS Error:", e.message));
 
-      //
-      // === 7. ESP → сервер ===
-      //
       esp.on("message", (msg) => {
         if (Buffer.isBuffer(msg)) {
           if (!ready) {
@@ -159,7 +120,6 @@ async function start() {
         }
 
         const text = msg.toString().trim();
-        console.log(`📝 Text from ESP: ${text}`);
 
         if (text.includes("STREAM STOPPED")) {
           console.log("🛑 Stream stopped — committing buffer");
@@ -171,10 +131,10 @@ async function start() {
               type: "response.create",
               response: {
                 modalities: ["text"],
-                instructions: "Transcribe and respond briefly to the spoken input.",
+                instructions: "Transcribe the user's speech audio and return only the recognized text.",
               },
             }));
-            console.log("📨 Sent commit + response.create");
+            console.log("📨 Sent commit + transcription request");
           }, 300);
         }
 
@@ -190,9 +150,6 @@ async function start() {
         console.log("🔌 ESP disconnected");
         oa.close();
       });
-
-      esp.on("error", (e) => console.error("❌ ESP error:", e.message));
-
     } catch (err) {
       console.error("❌ Setup error:", err.message);
       if (esp.readyState === WebSocket.OPEN) esp.close();
