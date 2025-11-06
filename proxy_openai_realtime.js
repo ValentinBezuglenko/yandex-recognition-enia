@@ -4,7 +4,6 @@ import axios from "axios";
 
 const PORT = process.env.PORT || 10000;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
-
 if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not set");
 
 async function createRealtimeSession() {
@@ -18,7 +17,6 @@ async function createRealtimeSession() {
 
 async function start() {
   console.log(`🚀 Proxy listening on ws://0.0.0.0:${PORT}`);
-
   const wss = new WebSocketServer({ port: PORT, path: "/ws" });
 
   wss.on("connection", async (esp) => {
@@ -39,44 +37,30 @@ async function start() {
       let audioBuffer = [];
       let flushTimer = null;
       let lastFlushSize = 0;
-      let espDisconnected = false;
-
       const SAMPLE_RATE = 24000; // Hz
       const BYTES_PER_SAMPLE = 2; // PCM16
       const MIN_SEC = 2; // минимум 2 секунды
       const MIN_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * MIN_SEC;
 
       // --- отправка аудио ---
-      function flushAudioBuffer() {
-        if (oa.readyState !== WebSocket.OPEN) return;
+      function flushAudioBuffer(force = false) {
+        if (audioBuffer.length === 0 || oa.readyState !== WebSocket.OPEN) return;
 
         const full = Buffer.concat(audioBuffer);
-        if (full.length < MIN_BYTES && !espDisconnected) {
+        if (!force && full.length < MIN_BYTES) {
           console.log(`⏳ Buffer too small (${full.length} bytes), waiting for 2s of audio`);
           return;
         }
 
-        if (full.length > 0) {
-          const base64 = full.toString("base64");
-          oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
-          console.log(`📤 Sent ${full.length} bytes to OpenAI`);
-          lastFlushSize = full.length;
-          audioBuffer = [];
-        }
+        const base64 = full.toString("base64");
+        oa.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64 }));
 
+        lastFlushSize = full.length;
+        audioBuffer = [];
         clearTimeout(flushTimer);
         flushTimer = null;
 
-        // Если ESP отключился, сразу делаем commit + response.create
-        if (espDisconnected && lastFlushSize > 0) {
-          oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          oa.send(JSON.stringify({
-            type: "response.create",
-            response: { modalities: ["text"], instructions: "Return only transcription" }
-          }));
-          console.log("📨 Commit + response.create sent after ESP disconnect");
-          lastFlushSize = 0;
-        }
+        console.log(`📤 Sent ${lastFlushSize} bytes to OpenAI`);
       }
 
       // --- события OpenAI ---
@@ -104,14 +88,16 @@ async function start() {
 
         if (Buffer.isBuffer(msg)) {
           audioBuffer.push(msg);
+
+          // если данных нет 2 секунды, принудительно сбрасываем
           clearTimeout(flushTimer);
-          flushTimer = setTimeout(flushAudioBuffer, 2000); // flush через 2 секунды простоя
+          flushTimer = setTimeout(() => flushAudioBuffer(), 2000);
           return;
         }
 
         const text = msg.toString().trim();
         if (text.includes("STREAM_STOPPED")) {
-          flushAudioBuffer();
+          flushAudioBuffer(true);
           if (lastFlushSize > 0) {
             oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
             oa.send(JSON.stringify({
@@ -119,7 +105,7 @@ async function start() {
               response: { modalities: ["text"], instructions: "Return only transcription" }
             }));
             lastFlushSize = 0;
-            console.log("📨 Commit + response.create sent after STREAM_STOPPED");
+            console.log("📨 Commit + response.create sent");
           }
         }
 
@@ -127,15 +113,23 @@ async function start() {
           audioBuffer = [];
           flushTimer = null;
           lastFlushSize = 0;
-          espDisconnected = false;
           console.log("🎙 Stream started");
         }
       });
 
+      // --- ESP отключился ---
       esp.on("close", () => {
-        console.log("🔌 ESP disconnected");
-        espDisconnected = true;
-        flushAudioBuffer(); // отправляем оставшийся буфер
+        console.log("🔌 ESP disconnected, flushing remaining buffer");
+        flushAudioBuffer(true);
+        if (lastFlushSize > 0 && oa.readyState === WebSocket.OPEN) {
+          oa.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          oa.send(JSON.stringify({
+            type: "response.create",
+            response: { modalities: ["text"], instructions: "Return only transcription" }
+          }));
+          console.log("📨 Commit + response.create sent after ESP disconnect");
+        }
+        oa.close();
       });
 
       esp.on("error", (e) => console.error("❌ ESP error:", e.message));
