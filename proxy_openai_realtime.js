@@ -1,88 +1,55 @@
-// npm install ws axios
-import WebSocket, { WebSocketServer } from "ws";
-import axios from "axios";
+import express from "express";
+import multer from "multer";
+import fetch from "node-fetch";
+import { exec } from "child_process";
+import fs from "fs";
 
-const PORT = process.env.PORT || 10000;
-const IAM_TOKEN = process.env.YC_IAM_TOKEN;
-if (!IAM_TOKEN) throw new Error("Set Yandex IAM token in YC_IAM_TOKEN");
+const app = express();
+const upload = multer({ dest: "uploads/" });
 
-const SAMPLE_RATE = 24000; // 24 kHz
-const BYTES_PER_SAMPLE = 2; // PCM16
-const CHANNELS = 1;
+const API_KEY = process.env.YANDEX_API_KEY;
+if (!API_KEY) {
+  throw new Error("YANDEX_API_KEY environment variable is not set");
+}
+const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
+const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
-let audioBuffer = [];
+// принимаем POST от ESP32
+app.post("/upload", upload.single("audio"), async (req, res) => {
+  const pcmPath = req.file.path;
+  const oggPath = pcmPath + ".ogg";
 
-const wss = new WebSocketServer({ port: PORT, path: "/ws" });
-console.log(`🚀 Yandex STT proxy listening on ws://0.0.0.0:${PORT}`);
+  console.log("🎧 Received audio:", pcmPath);
 
-wss.on("connection", (esp) => {
-  console.log("✅ ESP connected", esp._socket.remoteAddress);
-
-  let flushTimer = null;
-  const FLUSH_INTERVAL = 2000; // 2 сек
-
-  esp.on("message", (msg) => {
-    if (Buffer.isBuffer(msg)) {
-      audioBuffer.push(msg);
-
-      // если данных нет 2 секунды, сбрасываем
-      clearTimeout(flushTimer);
-      flushTimer = setTimeout(() => flushAudioToYandex(), FLUSH_INTERVAL);
-      return;
-    }
-
-    const text = msg.toString().trim();
-    if (text.includes("STREAM_STARTED")) {
-      audioBuffer = [];
-      console.log("🎙 Stream started");
-    }
-    if (text.includes("STREAM_STOPPED")) {
-      flushAudioToYandex(true);
-    }
+  // Конвертируем PCM → OGG (Opus)
+  await new Promise((resolve, reject) => {
+    exec(
+      `ffmpeg -f s16le -ar 16000 -ac 1 -i ${pcmPath} -c:a libopus ${oggPath}`,
+      (err) => (err ? reject(err) : resolve())
+    );
   });
 
-  esp.on("close", () => {
-    console.log("🔌 ESP disconnected, flushing buffer");
-    flushAudioToYandex(true);
+  console.log("✅ Converted to OGG:", oggPath);
+
+  // Отправляем в Яндекс
+  const oggData = fs.readFileSync(oggPath);
+  const response = await fetch(STT_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": AUTH_HEADER,
+      "Content-Type": "audio/ogg; codecs=opus",
+    },
+    body: oggData,
   });
 
-  async function flushAudioToYandex(force = false) {
-    if (audioBuffer.length === 0) return;
-    const full = Buffer.concat(audioBuffer);
-    if (!force && full.length < SAMPLE_RATE * BYTES_PER_SAMPLE) return; // хотя бы 1 секунда аудио
+  const text = await response.text();
+  console.log("🗣️ Yandex response:", text);
 
-    audioBuffer = [];
+  // Очищаем временные файлы
+  fs.unlinkSync(pcmPath);
+  fs.unlinkSync(oggPath);
 
-    try {
-      // Отправляем в Yandex STT
-      const res = await axios.post(
-        "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize",
-        full,
-        {
-          headers: {
-            "Authorization": `Bearer ${IAM_TOKEN}`,
-            "Content-Type": "application/octet-stream",
-            "Transfer-Encoding": "chunked",
-          },
-          params: {
-            lang: "ru-RU",
-            format: "lpcm",
-            sampleRateHertz: SAMPLE_RATE,
-          },
-          responseType: "json",
-        }
-      );
-
-      const text = res.data.result || "";
-      console.log("📝 STT result:", text);
-
-      // Отправляем текст обратно ESP
-      if (esp.readyState === WebSocket.OPEN) {
-        esp.send(text);
-      }
-
-    } catch (err) {
-      console.error("❌ Yandex STT error:", err.response?.data || err.message);
-    }
-  }
+  res.send(text);
 });
+
+app.listen(8080, () => console.log("🌐 Server running on http://localhost:8080"));
