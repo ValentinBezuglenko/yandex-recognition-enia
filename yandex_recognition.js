@@ -9,7 +9,7 @@ const HTTP_PORT = process.env.HTTP_PORT || 8081; // Express
 const app = express();
 
 // ==========================
-// 📡 WebSocket сервер для аудио
+// WebSocket сервер
 // ==========================
 const wss = new WebSocketServer({ port: PORT });
 console.log(`🌐 WebSocket server running on port ${PORT}`);
@@ -37,19 +37,26 @@ wss.on("connection", ws => {
         (err, stdout, stderr) => {
           if (err) {
             console.error("❌ ffmpeg error:", stderr);
-          } else {
-            if (fs.existsSync(oggPath)) {
-              const stats = fs.statSync(oggPath);
-              if (stats.size > 0) {
-                console.log(`✅ Converted to OGG: ${oggFilename}`);
-                console.log(`🔗 OGG available at: http://localhost:${HTTP_PORT}/download/${oggFilename}`);
-              } else {
-                console.error(`❌ OGG file is empty: ${oggFilename}`);
-              }
-            } else {
-              console.error(`❌ OGG file not found: ${oggFilename}`);
-            }
+            return;
           }
+
+          if (!fs.existsSync(oggPath) || fs.statSync(oggPath).size === 0) {
+            console.error(`❌ OGG file not created or empty: ${oggFilename}`);
+            return;
+          }
+
+          console.log(`✅ Converted to OGG: ${oggFilename}`);
+
+          // Загрузка на 0x0.st
+          const uploadCommand = `curl --upload-file ${oggPath} https://0x0.st/${oggFilename}`;
+          exec(uploadCommand, (err2, stdout2, stderr2) => {
+            if (err2) {
+              console.error("❌ Upload error:", stderr2);
+            } else {
+              const publicUrl = stdout2.trim();
+              console.log(`🔗 Uploaded to 0x0.st: ${publicUrl}`);
+            }
+          });
         }
       );
 
@@ -72,40 +79,8 @@ wss.on("connection", ws => {
 });
 
 // ==========================
-// 📥 Express для скачивания файлов
+// HTTP сервер (если нужен для локальных файлов)
 // ==========================
-app.get("/download/:filename", (req, res) => {
-  const filename = req.params.filename;
-  const filePath = path.join(process.cwd(), filename);
-
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).send("File not found");
-  }
-
-  const stats = fs.statSync(filePath);
-  if (stats.size === 0) {
-    return res.status(500).send("File is empty, conversion might have failed");
-  }
-
-  console.log(`📦 Sending file ${filename}, size: ${stats.size} bytes`);
-
-  // Явно выставляем заголовки, чтобы браузер скачивал файл
-  res.setHeader("Content-Type", "audio/ogg");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-
-  const readStream = fs.createReadStream(filePath);
-  readStream.pipe(res);
-
-  readStream.on("error", err => {
-    console.error("❌ Read stream error:", err);
-    res.status(500).end("Server error while reading file");
-  });
-
-  readStream.on("end", () => {
-    console.log(`✅ File sent: ${filename}`);
-  });
-});
-
 app.listen(HTTP_PORT, () => {
-  console.log(`🌐 HTTP server running on port ${HTTP_PORT} — files available at /download/:filename`);
+  console.log(`🌐 HTTP server running on port ${HTTP_PORT}`);
 });
