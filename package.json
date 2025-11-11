@@ -2,9 +2,9 @@
   "name": "recognition-yo-node",
   "version": "1.0.0",
   "type": "module",
-  "main": "proxy_openai_realtime.js",
+  "main": "yandex_recognition.js",
   "scripts": {
-    "start": "node proxy_openai_realtime.js"
+    "start": "node yandex_recognition.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
