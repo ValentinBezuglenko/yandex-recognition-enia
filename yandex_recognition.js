@@ -1,36 +1,38 @@
-import WebSocket, { WebSocketServer } from "ws";
-import fs from "fs";
-import { exec } from "child_process";
 import express from "express";
+import { WebSocketServer } from "ws";
+import fs from "fs";
+import path from "path";
+import { exec } from "child_process";
 
-const PORT_WS = process.env.PORT_WS || 10000;
-const PORT_HTTP = process.env.PORT_HTTP || 8080;
-
+const PORT = process.env.PORT || 8080;
+const HTTP_PORT = process.env.HTTP_PORT || 8081; // для Express
 const app = express();
-const wss = new WebSocketServer({ port: PORT_WS });
 
-console.log(`🌐 WebSocket server running on port ${PORT_WS}`);
+// ==========================
+// 📡 WebSocket сервер для аудио
+// ==========================
+const wss = new WebSocketServer({ port: PORT });
+console.log(`🌐 WebSocket server running on port ${PORT}`);
 
-// =======================
-// 📡 WebSocket — приём аудио
-// =======================
 wss.on("connection", ws => {
   const timestamp = Date.now();
   const pcmFilename = `stream_${timestamp}.pcm`;
   const oggFilename = `stream_${timestamp}.ogg`;
-  const file = fs.createWriteStream(pcmFilename);
+  const pcmPath = path.join(process.cwd(), pcmFilename);
+  const oggPath = path.join(process.cwd(), oggFilename);
+  const file = fs.createWriteStream(pcmPath);
   let totalBytes = 0;
 
   console.log("🎙 Client connected");
 
-  ws.on("message", data => {
+  ws.on("message", async data => {
     if (data.toString() === "/end") {
       file.end();
       console.log(`⏹ Stream ended: ${pcmFilename} (total bytes: ${totalBytes})`);
 
-      // Конвертация PCM → OGG
+      // Конвертация в OGG
       exec(
-        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i ${pcmFilename} -c:a libopus ${oggFilename}`,
+        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i ${pcmPath} -c:a libopus ${oggPath}`,
         (err, stdout, stderr) => {
           if (err) {
             console.error("❌ ffmpeg error:", stderr);
@@ -39,7 +41,6 @@ wss.on("connection", ws => {
           }
         }
       );
-
       return;
     }
 
@@ -55,26 +56,26 @@ wss.on("connection", ws => {
     console.log("❌ Client disconnected");
   });
 
-  ws.on("error", err => {
-    console.error("❌ WebSocket error:", err);
+  ws.on("error", err => console.error("❌ WebSocket error:", err));
+});
+
+// ==========================
+// 📥 Express для скачивания файлов
+// ==========================
+app.get("/download/:filename", (req, res) => {
+  const filename = req.params.filename;
+  const filePath = path.join(process.cwd(), filename);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send("File not found");
+  }
+
+  res.download(filePath, err => {
+    if (err) console.error("❌ Download error:", err);
+    else console.log(`✅ File sent: ${filename}`);
   });
 });
 
-// =======================
-// 📥 HTTP — скачать OGG
-// =======================
-app.get("/download/:filename", (req, res) => {
-  const filename = req.params.filename;
-  if (!fs.existsSync(filename)) return res.status(404).send("File not found");
-  res.download(filename);
-});
-
-// Список файлов
-app.get("/list", (req, res) => {
-  const files = fs.readdirSync("./").filter(f => f.endsWith(".ogg"));
-  res.json(files);
-});
-
-app.listen(PORT_HTTP, () => {
-  console.log(`🌐 HTTP server running on port ${PORT_HTTP}`);
+app.listen(HTTP_PORT, () => {
+  console.log(`🌐 HTTP server running on port ${HTTP_PORT} — files available at /download/:filename`);
 });
