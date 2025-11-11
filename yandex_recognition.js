@@ -9,7 +9,7 @@ const HTTP_PORT = process.env.HTTP_PORT || 8081; // Express
 const app = express();
 
 // ==========================
-// WebSocket сервер
+// 📡 WebSocket сервер
 // ==========================
 const wss = new WebSocketServer({ port: PORT });
 console.log(`🌐 WebSocket server running on port ${PORT}`);
@@ -31,7 +31,7 @@ wss.on("connection", ws => {
       file.end();
       console.log(`⏹ Stream ended: ${pcmFilename} (total bytes: ${totalBytes})`);
 
-      // Конвертация в OGG
+      // Конвертация PCM → OGG
       exec(
         `ffmpeg -y -f s16le -ar 16000 -ac 1 -i ${pcmPath} -c:a libopus ${oggPath}`,
         (err, stdout, stderr) => {
@@ -41,14 +41,14 @@ wss.on("connection", ws => {
           }
 
           if (!fs.existsSync(oggPath) || fs.statSync(oggPath).size === 0) {
-            console.error(`❌ OGG file not created or empty: ${oggFilename}`);
+            console.error(`❌ OGG file not created or пустой: ${oggFilename}`);
             return;
           }
 
           console.log(`✅ Converted to OGG: ${oggFilename}`);
 
           // Загрузка на 0x0.st
-          const uploadCommand = `curl --upload-file ${oggPath} https://0x0.st/${oggFilename}`;
+          const uploadCommand = `curl --upload-file ${oggPath} https://0x0.st/`;
           exec(uploadCommand, (err2, stdout2, stderr2) => {
             if (err2) {
               console.error("❌ Upload error:", stderr2);
@@ -79,7 +79,7 @@ wss.on("connection", ws => {
 });
 
 // ==========================
-// HTTP сервер (если нужен для локальных файлов)
+// HTTP сервер (если нужен)
 // ==========================
 app.listen(HTTP_PORT, () => {
   console.log(`🌐 HTTP server running on port ${HTTP_PORT}`);
