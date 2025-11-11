@@ -4,23 +4,45 @@ import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
 import { fileURLToPath } from "url";
+import http from "http";
+import fetch from "node-fetch";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 🗂 Папка для файлов
 const OGG_DIR = path.join(__dirname, "public/ogg");
 if (!fs.existsSync(OGG_DIR)) fs.mkdirSync(OGG_DIR, { recursive: true });
 
-// 🌐 Один порт (Render требует один сервер)
+// 🌐 Настройки
 const PORT = process.env.PORT || 8080;
-const app = express();
+const API_KEY = process.env.YANDEX_API_KEY;
+if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 
-// 📡 Вебсокет поверх того же HTTP сервера
-import http from "http";
+const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
+const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
+
+const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
+// 🧠 Распознавание речи через Yandex STT
+async function recognizeOgg(oggPath) {
+  const oggData = fs.readFileSync(oggPath);
+  const response = await fetch(STT_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": AUTH_HEADER,
+      "Content-Type": "audio/ogg; codecs=opus",
+    },
+    body: oggData,
+  });
+
+  const text = await response.text();
+  console.log("🗣️ Yandex STT response:", text);
+  return text;
+}
+
+// 📡 WebSocket приём аудио
 wss.on("connection", ws => {
   const timestamp = Date.now();
   const pcmFilename = `stream_${timestamp}.pcm`;
@@ -33,19 +55,32 @@ wss.on("connection", ws => {
 
   console.log("🎙 Client connected");
 
-  ws.on("message", data => {
+  ws.on("message", async data => {
     if (data.toString() === "/end") {
       file.end();
       console.log(`⏹ Stream ended: ${pcmFilename} (total: ${totalBytes})`);
 
+      // 🔄 Конвертация PCM → OGG (усиление звука)
       exec(
-        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -c:a libopus "${oggPath}"`,
-        err => {
-          if (err) return console.error("❌ ffmpeg error");
-          if (!fs.existsSync(oggPath)) return console.error("❌ No OGG created");
+        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -af "volume=3" -c:a libopus "${oggPath}"`,
+        async err => {
+          if (err) {
+            console.error("❌ ffmpeg error:", err);
+            return;
+          }
+          if (!fs.existsSync(oggPath)) {
+            console.error("❌ No OGG created");
+            return;
+          }
 
           console.log(`✅ Converted to OGG: ${oggFilename}`);
-          console.log(`🌐 Player: https://${process.env.RENDER_EXTERNAL_HOSTNAME}/player/${oggFilename}`);
+          console.log(`🌐 Player: https://${process.env.RENDER_EXTERNAL_HOSTNAME || "localhost"}/player/${oggFilename}`);
+
+          // 🧠 Распознавание речи
+          const text = await recognizeOgg(oggPath);
+
+          // 🔙 Отправляем результат клиенту
+          ws.send(JSON.stringify({ type: "stt_result", text }));
         }
       );
       return;
@@ -60,7 +95,7 @@ wss.on("connection", ws => {
   ws.on("close", () => file.end());
 });
 
-// 🎧 Страница-плеер
+// 🎧 HTML-плеер для проверки
 app.get("/player/:filename", (req, res) => {
   const filename = req.params.filename;
   const filePath = path.join(OGG_DIR, filename);
@@ -82,7 +117,6 @@ app.get("/player/:filename", (req, res) => {
   `);
 });
 
-// 🎵 Отдача файлов
 app.use("/file", express.static(OGG_DIR));
 
 server.listen(PORT, () => {
