@@ -111,15 +111,10 @@ app.post("/end", async (req, res) => {
   }
 });
 
-// ==========================
-// Список файлов
-// ==========================
 app.get("/list", (req, res) => {
   const files = fs.readdirSync("./").filter(f => f.startsWith("stream_"));
   res.json(files);
 });
-
-
 
 app.get("/files/:filename", (req, res) => {
   const filename = req.params.filename;
