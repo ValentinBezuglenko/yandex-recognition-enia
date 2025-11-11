@@ -25,7 +25,6 @@ app.use(express.raw({ type: "application/octet-stream", limit: "20mb" }));
 // ==========================
 app.post("/chunk", (req, res) => {
   if (!currentFileStream) {
-    // Автоматический старт нового потока
     const timestamp = Date.now();
     currentFileName = `stream_${timestamp}.pcm`;
     currentFileStream = fs.createWriteStream(currentFileName);
@@ -37,7 +36,6 @@ app.post("/chunk", (req, res) => {
   currentFileStream.write(chunk);
   totalBytes += chunk.length;
 
-  // Лог каждые 8 KB
   if (totalBytes % 8192 < chunk.length) {
     console.log(`⬇️ Chunk received: ${chunk.length} bytes (total: ${totalBytes})`);
   }
@@ -48,7 +46,7 @@ app.post("/chunk", (req, res) => {
 // ==========================
 // Конец потока
 // ==========================
-app.post("/end", async (req, res) => {
+app.post("/end", (req, res) => {
   if (!currentFileStream) {
     console.log("⚠️ /end received, but no active stream.");
     return res.status(400).send("No active stream");
@@ -67,50 +65,48 @@ app.post("/end", async (req, res) => {
   const finalTotalBytes = totalBytes;
   totalBytes = 0;
 
-  try {
-    // Конвертация PCM → OGG с усилением
-    await new Promise((resolve, reject) => {
-      exec(
-        `ffmpeg -f s16le -ar 16000 -ac 1 -i ${pcmPath} -af "volume=3" -c:a libopus ${oggPath}`,
-        (err, stdout, stderr) => {
-          if (err) {
-            console.error("❌ ffmpeg error:", stderr);
-            reject(err);
-          } else {
-            console.log("✅ Converted to OGG:", oggPath);
-            resolve();
-          }
-        }
-      );
-    });
+  // Конвертация и отправка в Yandex STT
+  exec(
+    `ffmpeg -f s16le -ar 16000 -ac 1 -i ${pcmPath} -af "volume=3" -c:a libopus ${oggPath}`,
+    (err, stdout, stderr) => {
+      if (err) {
+        console.error("❌ ffmpeg error:", stderr);
+        return res.status(500).send("FFMPEG error");
+      }
 
-    // Отправка в Yandex STT
-    const oggData = fs.readFileSync(oggPath);
-    console.log(`📤 Sending ${oggData.length} bytes to Yandex...`);
+      console.log("✅ Converted to OGG:", oggPath);
 
-    const response = await fetch(STT_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": AUTH_HEADER,
-        "Content-Type": "audio/ogg; codecs=opus",
-      },
-      body: oggData,
-    });
+      const oggData = fs.readFileSync(oggPath);
+      console.log(`📤 Sending ${oggData.length} bytes to Yandex...`);
 
-    const text = await response.text();
-    console.log("🗣️ Yandex response:", text);
-
-    res.send({
-      message: "Stream processed successfully",
-      totalBytes: finalTotalBytes,
-      sttText: text,
-    });
-  } catch (err) {
-    console.error("🔥 STT error:", err);
-    res.status(500).send(err.message);
-  }
+      fetch(STT_URL, {
+        method: "POST",
+        headers: {
+          "Authorization": AUTH_HEADER,
+          "Content-Type": "audio/ogg; codecs=opus",
+        },
+        body: oggData,
+      })
+        .then(r => r.text())
+        .then(text => {
+          console.log("🗣️ Yandex response:", text);
+          res.send({
+            message: "Stream processed successfully",
+            totalBytes: finalTotalBytes,
+            sttText: text,
+          });
+        })
+        .catch(err => {
+          console.error("🔥 STT error:", err);
+          res.status(500).send(err.message);
+        });
+    }
+  );
 });
 
+// ==========================
+// Список файлов
+// ==========================
 app.get("/list", (req, res) => {
   const files = fs.readdirSync("./").filter(f => f.startsWith("stream_"));
   res.json(files);
