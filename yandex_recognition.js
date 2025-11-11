@@ -38,10 +38,18 @@ wss.on("connection", ws => {
           if (err) {
             console.error("❌ ffmpeg error:", stderr);
           } else {
-            console.log(`✅ Converted to OGG: ${oggFilename}`);
-            const downloadUrl = `http://localhost:${HTTP_PORT}/download/${oggFilename}`;
-            // Только выводим ссылку в консоль
-            console.log(`🔗 OGG available at: ${downloadUrl}`);
+            // Проверяем размер файла
+            if (fs.existsSync(oggPath)) {
+              const stats = fs.statSync(oggPath);
+              if (stats.size > 0) {
+                console.log(`✅ Converted to OGG: ${oggFilename}`);
+                console.log(`🔗 OGG available at: http://localhost:${HTTP_PORT}/download/${oggFilename}`);
+              } else {
+                console.error(`❌ OGG file is empty: ${oggFilename}`);
+              }
+            } else {
+              console.error(`❌ OGG file not found: ${oggFilename}`);
+            }
           }
         }
       );
@@ -73,6 +81,13 @@ app.get("/download/:filename", (req, res) => {
 
   if (!fs.existsSync(filePath)) {
     return res.status(404).send("File not found");
+  }
+
+  const stats = fs.statSync(filePath);
+  console.log(`📦 Sending file ${filename}, size: ${stats.size} bytes`);
+
+  if (stats.size === 0) {
+    return res.status(500).send("File is empty, conversion might have failed");
   }
 
   res.download(filePath, err => {
