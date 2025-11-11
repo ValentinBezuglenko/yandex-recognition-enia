@@ -11,15 +11,18 @@ if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
-// Для хранения текущего потока
+// ==========================
+// Текущий поток
+// ==========================
 let currentFileStream = null;
 let currentFileName = "";
 let totalBytes = 0;
 
+// Ограничение размера чанка для express.raw
 app.use(express.raw({ type: "application/octet-stream", limit: "10mb" }));
 
 // ==========================
-// 📡 Приём каждого чанка
+// Получение чанка
 // ==========================
 app.post("/chunk", (req, res) => {
   if (!currentFileStream) {
@@ -33,18 +36,21 @@ app.post("/chunk", (req, res) => {
   const chunk = req.body;
   currentFileStream.write(chunk);
   totalBytes += chunk.length;
-  console.log(`⬇️ Chunk received: ${chunk.length} bytes (total: ${totalBytes})`);
+
+  // Лог каждые 8 KB
+  if (totalBytes % 8192 < chunk.length) {
+    console.log(`⬇️ Chunk received: ${chunk.length} bytes (total: ${totalBytes})`);
+  }
 
   res.sendStatus(200);
 });
 
 // ==========================
-// 🚦 Сигнал конца потока
+// Сигнал конца потока
 // ==========================
 app.post("/end", async (req, res) => {
   if (!currentFileStream) {
-    res.status(400).send("❌ No stream in progress");
-    return;
+    return res.status(400).send("❌ No stream in progress");
   }
 
   currentFileStream.end();
@@ -70,7 +76,9 @@ app.post("/end", async (req, res) => {
       );
     });
 
+    // Отправка в Yandex STT
     const oggData = fs.readFileSync(oggPath);
+    console.log(`📤 Sending ${oggData.length} bytes to Yandex...`);
 
     const response = await fetch(STT_URL, {
       method: "POST",
@@ -84,7 +92,7 @@ app.post("/end", async (req, res) => {
     const text = await response.text();
     console.log("🗣️ Yandex response:", text);
 
-    // Сбрасываем текущий поток
+    // Сброс потока
     currentFileStream = null;
     currentFileName = "";
     totalBytes = 0;
@@ -97,7 +105,7 @@ app.post("/end", async (req, res) => {
 });
 
 // ==========================
-// 🔹 Список файлов и скачивание
+// Список файлов
 // ==========================
 app.get("/list", (req, res) => {
   const files = fs.readdirSync("./").filter(f => f.startsWith("stream_"));
@@ -110,5 +118,6 @@ app.get("/files/:filename", (req, res) => {
   res.download(filename);
 });
 
+// ==========================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
