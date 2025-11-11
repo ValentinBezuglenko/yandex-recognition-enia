@@ -17,9 +17,6 @@ let currentFileStream = null;
 let currentFileName = "";
 let totalBytes = 0;
 
-// Ограничение размера для express.raw
-app.use(express.raw({ type: "application/octet-stream", limit: "20mb" }));
-
 // ==========================
 // Получение чанка (авто-старт потока)
 // ==========================
@@ -32,15 +29,25 @@ app.post("/chunk", (req, res) => {
     console.log("🎙️ Auto stream started:", currentFileName);
   }
 
-  const chunk = req.body;
-  currentFileStream.write(chunk);
-  totalBytes += chunk.length;
+  let chunkBytes = 0;
+  req.on("data", chunk => {
+    currentFileStream.write(chunk);
+    chunkBytes += chunk.length;
+    totalBytes += chunk.length;
 
-  if (totalBytes % 8192 < chunk.length) {
-    console.log(`⬇️ Chunk received: ${chunk.length} bytes (total: ${totalBytes})`);
-  }
+    if (totalBytes % 8192 < chunk.length) {
+      console.log(`⬇️ Chunk received: ${chunk.length} bytes (total: ${totalBytes})`);
+    }
+  });
 
-  res.sendStatus(200);
+  req.on("end", () => {
+    res.sendStatus(200);
+  });
+
+  req.on("error", err => {
+    console.error("❌ Chunk stream error:", err);
+    res.status(500).send(err.message);
+  });
 });
 
 // ==========================
@@ -65,7 +72,7 @@ app.post("/end", (req, res) => {
   const finalTotalBytes = totalBytes;
   totalBytes = 0;
 
-  // Конвертация и отправка в Yandex STT
+  // Конвертация PCM → OGG
   exec(
     `ffmpeg -f s16le -ar 16000 -ac 1 -i ${pcmPath} -af "volume=3" -c:a libopus ${oggPath}`,
     (err, stdout, stderr) => {
