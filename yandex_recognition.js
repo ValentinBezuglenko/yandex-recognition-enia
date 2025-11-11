@@ -1,25 +1,45 @@
 import WebSocket, { WebSocketServer } from "ws";
 import fs from "fs";
+import { exec } from "child_process";
+import express from "express";
 
-const PORT = process.env.PORT || 10000; // Render назначит порт через переменную окружения
+const PORT_WS = process.env.PORT_WS || 10000;
+const PORT_HTTP = process.env.PORT_HTTP || 8080;
 
-// Создаём простой WebSocket сервер
-const wss = new WebSocketServer({ port: PORT });
-console.log(`🌐 WebSocket server running on port ${PORT}`);
+const app = express();
+const wss = new WebSocketServer({ port: PORT_WS });
 
+console.log(`🌐 WebSocket server running on port ${PORT_WS}`);
+
+// =======================
+// 📡 WebSocket — приём аудио
+// =======================
 wss.on("connection", ws => {
   const timestamp = Date.now();
-  const filename = `stream_${timestamp}.pcm`;
-  const file = fs.createWriteStream(filename);
+  const pcmFilename = `stream_${timestamp}.pcm`;
+  const oggFilename = `stream_${timestamp}.ogg`;
+  const file = fs.createWriteStream(pcmFilename);
   let totalBytes = 0;
 
   console.log("🎙 Client connected");
 
   ws.on("message", data => {
-    // ESP32 шлёт "/end" для завершения
     if (data.toString() === "/end") {
       file.end();
-      console.log(`⏹ Stream ended: ${filename} (total bytes: ${totalBytes})`);
+      console.log(`⏹ Stream ended: ${pcmFilename} (total bytes: ${totalBytes})`);
+
+      // Конвертация PCM → OGG
+      exec(
+        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i ${pcmFilename} -c:a libopus ${oggFilename}`,
+        (err, stdout, stderr) => {
+          if (err) {
+            console.error("❌ ffmpeg error:", stderr);
+          } else {
+            console.log(`✅ Converted to OGG: ${oggFilename}`);
+          }
+        }
+      );
+
       return;
     }
 
@@ -40,3 +60,21 @@ wss.on("connection", ws => {
   });
 });
 
+// =======================
+// 📥 HTTP — скачать OGG
+// =======================
+app.get("/download/:filename", (req, res) => {
+  const filename = req.params.filename;
+  if (!fs.existsSync(filename)) return res.status(404).send("File not found");
+  res.download(filename);
+});
+
+// Список файлов
+app.get("/list", (req, res) => {
+  const files = fs.readdirSync("./").filter(f => f.endsWith(".ogg"));
+  res.json(files);
+});
+
+app.listen(PORT_HTTP, () => {
+  console.log(`🌐 HTTP server running on port ${PORT_HTTP}`);
+});
