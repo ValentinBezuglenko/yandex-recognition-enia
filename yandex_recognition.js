@@ -44,73 +44,58 @@ async function recognizeOgg(oggPath) {
 
 // 📡 WebSocket приём аудио
 wss.on("connection", ws => {
-  console.log("🎙 Client connected");
+  const timestamp = Date.now();
+  const pcmFilename = `stream_${timestamp}.pcm`;
+  const oggFilename = `stream_${timestamp}.ogg`;
+  const pcmPath = path.join(OGG_DIR, pcmFilename);
+  const oggPath = path.join(OGG_DIR, oggFilename);
 
-  let file = null;
-  let pcmPath = "";
-  let oggPath = "";
+  const file = fs.createWriteStream(pcmPath);
   let totalBytes = 0;
+
+  console.log("🎙 Client connected");
 
   ws.on("message", async data => {
     if (data.toString() === "/end") {
-      if (file) {
-        file.end();
-        console.log(`⏹ Stream ended: ${path.basename(pcmPath)} (total: ${totalBytes})`);
+      file.end();
+      console.log(`⏹ Stream ended: ${pcmFilename} (total: ${totalBytes})`);
 
-        // 🔄 Конвертация PCM → OGG
-        exec(
-          `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -af "volume=3" -c:a libopus "${oggPath}"`,
-          async err => {
-            if (err) {
-              console.error("❌ ffmpeg error:", err);
-              return;
-            }
-            if (!fs.existsSync(oggPath)) {
-              console.error("❌ No OGG created");
-              return;
-            }
-
-            console.log(`✅ Converted to OGG: ${path.basename(oggPath)}`);
-            console.log(`🌐 Player: https://${process.env.RENDER_EXTERNAL_HOSTNAME || "localhost"}/player/${path.basename(oggPath)}`);
-
-            const text = await recognizeOgg(oggPath);
-            ws.send(JSON.stringify({ type: "stt_result", text }));
+      // 🔄 Конвертация PCM → OGG (усиление звука)
+      exec(
+        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -af "volume=3" -c:a libopus "${oggPath}"`,
+        async err => {
+          if (err) {
+            console.error("❌ ffmpeg error:", err);
+            return;
           }
-        );
+          if (!fs.existsSync(oggPath)) {
+            console.error("❌ No OGG created");
+            return;
+          }
 
-        // Сброс для следующего стрима
-        file = null;
-        pcmPath = "";
-        oggPath = "";
-        totalBytes = 0;
-      }
+          console.log(`✅ Converted to OGG: ${oggFilename}`);
+          console.log(`🌐 Player: https://${process.env.RENDER_EXTERNAL_HOSTNAME || "localhost"}/player/${oggFilename}`);
+
+          // 🧠 Распознавание речи
+          const text = await recognizeOgg(oggPath);
+
+          // 🔙 Отправляем результат клиенту
+          ws.send(JSON.stringify({ type: "stt_result", text }));
+        }
+      );
       return;
     }
 
     if (data instanceof Buffer) {
-      // Создаём новый файл при начале каждого стрима
-      if (!file) {
-        const timestamp = Date.now();
-        const random = Math.floor(Math.random() * 1000); // чтобы точно уникально
-        const pcmFilename = `stream_${timestamp}_${random}.pcm`;
-        const oggFilename = `stream_${timestamp}_${random}.ogg`;
-        pcmPath = path.join(OGG_DIR, pcmFilename);
-        oggPath = path.join(OGG_DIR, oggFilename);
-        file = fs.createWriteStream(pcmPath);
-        totalBytes = 0;
-      }
-
       file.write(data);
       totalBytes += data.length;
     }
   });
 
-  ws.on("close", () => {
-    if (file) file.end();
-  });
+  ws.on("close", () => file.end());
 });
 
-// 🎧 HTML-плеер
+// 🎧 HTML-плеер для проверки
 app.get("/player/:filename", (req, res) => {
   const filename = req.params.filename;
   const filePath = path.join(OGG_DIR, filename);
