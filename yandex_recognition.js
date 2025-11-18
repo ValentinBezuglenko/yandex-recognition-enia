@@ -35,7 +35,7 @@ if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
-// --- Ключевые слова для эмоций ---
+// --- Ключевые слова для эмоций по распознаванию речи ---
 const emotionKeywords = {
   greeting: ["Привет", "хай", "здарова", "ёня"],
   happy: ["ура", "супер", "здорово"],
@@ -165,12 +165,31 @@ const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] 
 socket.on("connect", () => console.log("🟢 Подключено к backend.enia-kids.ru"));
 socket.on("disconnect", () => console.log("🔴 Отключено от backend.enia-kids.ru"));
 
-// --- Ретрансляция событий от backend ---
+// --- Ретрансляция событий от backend с маппингом в эмоции ---
 socket.on("/child/game-level/action", msg => {
   console.log("📩 Событие:", msg);
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) client.send(JSON.stringify(msg));
-  });
+
+  let emotion = null;
+  switch (msg.type) {
+    case "fail":
+      emotion = "sad";
+      break;
+    case "win":
+      emotion = "victory";
+      break;
+    case "success":
+      emotion = "happy";
+      break;
+  }
+
+  if (emotion) {
+    console.log(`🟢 Ретрансляция эмоции '${emotion}' от события '${msg.type}'`);
+    wss.clients.forEach(client => {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ emotion }));
+      }
+    });
+  }
 });
 
 // --- HTML-плеер для проверки ---
