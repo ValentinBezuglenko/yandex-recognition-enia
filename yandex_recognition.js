@@ -160,7 +160,7 @@ socket.on("/child/game-level/action", msg => {
   switch (msg.type) {
     case "fail": emotion = "sad"; break;
     case "win": emotion = "victory"; break;
-    case "success": emotion = "happy"; break;
+    case "completed": emotion = "happy"; break;
   }
   if (emotion) {
     console.log(`📩 Эмоция от backend: ${emotion}`);
