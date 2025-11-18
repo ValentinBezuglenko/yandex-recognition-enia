@@ -42,7 +42,6 @@ const emotionKeywords = {
   laugh: ["ха-ха", "смешно", "смейся"],
   sleep: ["спать", "сон", "спи"],
   victory: ["победа", "выиграл"],
-  fun: ["классно", "отлично", "весело"],
   idle: []
 };
 
@@ -161,7 +160,7 @@ socket.on("/child/game-level/action", msg => {
   switch (msg.type) {
     case "fail": emotion = "sad"; break;
     case "win": emotion = "victory"; break;
-    case "success": emotion = "fun"; break;
+    case "success": emotion = "happy"; break;
   }
   if (emotion) {
     console.log(`📩 Эмоция от backend: ${emotion}`);
@@ -171,28 +170,6 @@ socket.on("/child/game-level/action", msg => {
   }
 });
 
-// --- HTML-плеер для проверки ---
-app.get("/player/:filename", (req, res) => {
-  const filename = req.params.filename;
-  const filePath = path.join(OGG_DIR, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
-
-  res.send(`
-    <!doctype html>
-    <html>
-      <head><title>${filename}</title></head>
-      <body>
-        <h1>${filename}</h1>
-        <audio controls autoplay>
-          <source src="/file/${filename}" type="audio/ogg">
-        </audio>
-        <br>
-        <a href="/file/${filename}" download>Скачать</a>
-      </body>
-    </html>
-  `);
-});
-app.use("/file", express.static(OGG_DIR));
 
 // --- Автопинг Render ---
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
