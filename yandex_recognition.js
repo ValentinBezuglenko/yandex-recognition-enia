@@ -85,17 +85,20 @@ wss.on("connection", ws => {
 
           const text = await recognizeOgg(oggPath);
 
-          // Отправка обратно стримеру
+          // Отправка стримеру
           ws.send(JSON.stringify({ type: "stt_result", text }));
 
-          // Ретрансляция всем клиентам (ESP с эмоциями)
-          wss.clients.forEach(client => {
-            if (client.readyState === client.OPEN) {
-              client.send(JSON.stringify({ type: "stt_broadcast", text }));
-              console.log(`📤 Broadcast sent to client: ${text}`);
-            }
-          });
+          // Broadcast всем клиентам (один раз)
+          if (wss.clients.size > 0) {
+            console.log("📢 Broadcast to all clients:", text);
+            wss.clients.forEach(client => {
+              if (client.readyState === client.OPEN) {
+                client.send(JSON.stringify({ type: "stt_broadcast", text }));
+              }
+            });
+          }
 
+          // Начинаем новый поток для следующего аудио
           startNewStream();
         }
       );
