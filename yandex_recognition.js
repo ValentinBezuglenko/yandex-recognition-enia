@@ -2,11 +2,10 @@ import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import { io } from "socket.io-client";
-import fs from "fs";
-import path from "path";
-import { exec } from "child_process";
 import fetch from "node-fetch";
+import { spawn } from "child_process";
 import { fileURLToPath } from "url";
+import path from "path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,10 +20,6 @@ app.get("/", (req, res) => res.send("✅ Server is alive"));
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
-
-// --- Папка для OGG/PCM файлов ---
-const OGG_DIR = path.join(__dirname, "public/ogg");
-if (!fs.existsSync(OGG_DIR)) fs.mkdirSync(OGG_DIR, { recursive: true });
 
 // --- Настройки Yandex STT ---
 const API_KEY = process.env.YANDEX_API_KEY;
@@ -45,22 +40,6 @@ const emotionKeywords = {
   idle: []
 };
 
-// --- Распознаём OGG через Yandex STT ---
-async function recognizeOgg(oggPath) {
-  const oggData = fs.readFileSync(oggPath);
-  const response = await fetch(STT_URL, {
-    method: "POST",
-    headers: {
-      "Authorization": AUTH_HEADER,
-      "Content-Type": "audio/ogg; codecs=opus",
-    },
-    body: oggData,
-  });
-  const text = await response.text();
-  console.log("🗣️ Yandex STT response:", text);
-  return text;
-}
-
 // --- Определяем эмоции по ключевым словам ---
 function detectEmotions(text) {
   const recognized = text.toLowerCase();
@@ -73,78 +52,95 @@ function detectEmotions(text) {
       }
     }
   }
-  return detectedEmotions; // пустой массив если не найдено
+  return detectedEmotions;
 }
 
 // --- WebSocket приём аудио ---
 wss.on("connection", ws => {
-  let file = null;
-  let pcmPath = null;
-  let oggPath = null;
-  let totalBytes = 0;
-
-  function startNewStream() {
-    const timestamp = Date.now();
-    pcmPath = path.join(OGG_DIR, `stream_${timestamp}.pcm`);
-    oggPath = path.join(OGG_DIR, `stream_${timestamp}.ogg`);
-    totalBytes = 0;
-    file = fs.createWriteStream(pcmPath);
-    console.log("🎙 New stream started:", pcmPath);
-  }
-
-  startNewStream();
+  let pcmChunks = [];
 
   ws.on("message", async data => {
     if (data.toString() === "/end") {
-      if (!file) return;
-      file.end();
-      console.log(`⏹ Stream ended: ${path.basename(pcmPath)} (total: ${totalBytes})`);
+      if (!pcmChunks.length) return;
 
-      exec(
-        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -af "volume=3" -c:a libopus "${oggPath}"`,
-        async err => {
-          if (err) return console.error("❌ ffmpeg error:", err);
-          if (!fs.existsSync(oggPath)) return console.error("❌ No OGG created");
+      const pcmBuffer = Buffer.concat(pcmChunks);
+      pcmChunks = [];
 
-          console.log(`✅ Converted to OGG: ${path.basename(oggPath)}`);
-          const text = await recognizeOgg(oggPath);
+      try {
+        // --- Конвертация PCM → OGG через ffmpeg (в памяти) ---
+        const oggBuffer = await new Promise((resolve, reject) => {
+          const ffmpeg = spawn("ffmpeg", [
+            "-f", "s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            "-i", "pipe:0",
+            "-af", "volume=3",
+            "-c:a", "libopus",
+            "-f", "ogg",
+            "pipe:1"
+          ]);
 
-          // Определяем эмоции
-          let detectedEmotions = [];
-          try {
-            const parsed = JSON.parse(text);
-            detectedEmotions = detectEmotions(parsed.result || "");
-          } catch {
-            detectedEmotions = detectEmotions(text);
-          }
+          const chunks = [];
+          ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
+          ffmpeg.stderr.on("data", () => {}); // можно логировать ошибки
+          ffmpeg.on("close", code => code === 0
+            ? resolve(Buffer.concat(chunks))
+            : reject(new Error("ffmpeg failed"))
+          );
 
-          // --- Отправка результата стримеру ---
-          ws.send(JSON.stringify({ type: "stt_result", text }));
+          ffmpeg.stdin.write(pcmBuffer);
+          ffmpeg.stdin.end();
+        });
 
-          // --- Отправка эмоций всем клиентам ---
-          detectedEmotions.forEach(emotion => {
-            console.log(`🟢 Обнаружена эмоция '${emotion}'`);
-            wss.clients.forEach(client => {
-              if (client.readyState === 1) client.send(JSON.stringify({ emotion }));
-            });
-          });
+        console.log(`✅ PCM конвертирован в OGG (в памяти)`);
 
-          startNewStream();
+        // --- Распознаём через Yandex STT ---
+        const response = await fetch(STT_URL, {
+          method: "POST",
+          headers: {
+            "Authorization": AUTH_HEADER,
+            "Content-Type": "audio/ogg; codecs=opus",
+          },
+          body: oggBuffer
+        });
+        const text = await response.text();
+        console.log("🗣️ Yandex STT response:", text);
+
+        // --- Определяем эмоции ---
+        let detectedEmotions = [];
+        try {
+          const parsed = JSON.parse(text);
+          detectedEmotions = detectEmotions(parsed.result || "");
+        } catch {
+          detectedEmotions = detectEmotions(text);
         }
-      );
+
+        // --- Отправка результата стримеру ---
+        ws.send(JSON.stringify({ type: "stt_result", text }));
+
+        // --- Отправка эмоций всем клиентам ---
+        detectedEmotions.forEach(emotion => {
+          console.log(`🟢 Обнаружена эмоция '${emotion}'`);
+          wss.clients.forEach(client => {
+            if (client.readyState === 1) client.send(JSON.stringify({ emotion }));
+          });
+        });
+
+      } catch (err) {
+        console.error("❌ Ошибка конвертации или распознавания:", err);
+      }
+
       return;
     }
 
-    // Запись PCM
+    // --- Приём PCM в память ---
     if (data instanceof Buffer) {
-      if (!file) startNewStream();
-      file.write(data);
-      totalBytes += data.length;
+      pcmChunks.push(data);
     }
   });
 
   ws.on("close", () => {
-    if (file) file.end();
+    pcmChunks = [];
     console.log("🔌 Client disconnected");
   });
 });
@@ -169,7 +165,6 @@ socket.on("/child/game-level/action", msg => {
     });
   }
 });
-
 
 // --- Автопинг Render ---
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
