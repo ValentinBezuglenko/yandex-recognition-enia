@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 const OGG_DIR = path.join(__dirname, "public/ogg");
 if (!fs.existsSync(OGG_DIR)) fs.mkdirSync(OGG_DIR, { recursive: true });
 
-//  Настройки
+// 🌐 Настройки
 const PORT = process.env.PORT || 8080;
 const API_KEY = process.env.YANDEX_API_KEY;
 if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
@@ -25,7 +25,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-//  Распознавание речи через Yandex STT
+// 🧠 Распознавание речи через Yandex STT
 async function recognizeOgg(oggPath) {
   const oggData = fs.readFileSync(oggPath);
   const response = await fetch(STT_URL, {
@@ -42,13 +42,14 @@ async function recognizeOgg(oggPath) {
   return text;
 }
 
-//  WebSocket приём аудио
+// 📡 WebSocket приём аудио и ретрансляция
 wss.on("connection", ws => {
   let file = null;
   let pcmPath = null;
   let oggPath = null;
   let totalBytes = 0;
 
+  // Функция создания нового файла для следующего потока
   function startNewStream() {
     const timestamp = Date.now();
     pcmPath = path.join(OGG_DIR, `stream_${timestamp}.pcm`);
@@ -85,8 +86,15 @@ wss.on("connection", ws => {
           // 🧠 Распознавание речи
           const text = await recognizeOgg(oggPath);
 
-          // 🔙 Отправляем результат клиенту
+          // 🔙 Отправляем результат клиенту, который стримил
           ws.send(JSON.stringify({ type: "stt_result", text }));
+
+          // 🔄 Ретрансляция всем остальным клиентам (ESP с эмоциями)
+          wss.clients.forEach(client => {
+            if (client !== ws && client.readyState === client.OPEN) {
+              client.send(JSON.stringify({ type: "stt_broadcast", text }));
+            }
+          });
 
           // 🔄 Готовим новый поток для следующей записи
           startNewStream();
