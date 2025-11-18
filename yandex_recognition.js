@@ -10,140 +10,121 @@ import fetch from "node-fetch";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const OGG_DIR = path.join(__dirname, "public/ogg");
+if (!fs.existsSync(OGG_DIR)) fs.mkdirSync(OGG_DIR, { recursive: true });
 
-// ==========================
-// 🔐 Yandex STT настройки
-// ==========================
+// 🌐 Настройки
+const PORT = process.env.PORT || 8080;
 const API_KEY = process.env.YANDEX_API_KEY;
 if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
-// ==========================
-// 📁 Директория OGG
-// ==========================
-const OGG_DIR = path.join(__dirname, "public/ogg");
-if (!fs.existsSync(OGG_DIR)) fs.mkdirSync(OGG_DIR, { recursive: true });
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
 
-// ==========================
-// ⚙️ Хелпер: безопасная отправка WS
-// ==========================
-function sendWsSafe(ws, msg) {
-  if (ws.readyState === ws.OPEN) {
-    try { ws.send(JSON.stringify(msg)); }
-    catch (err) { console.error("❌ WS send error:", err); }
-  }
-}
-
-// ==========================
-// 🎧 Конвертация PCM → OGG
-// ==========================
-function convertPcmToOgg(pcmPath, oggPath) {
-  return new Promise((resolve, reject) => {
-    const cmd = `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -af "volume=3" -c:a libopus "${oggPath}"`;
-    exec(cmd, (err, stdout, stderr) => {
-      if (err) { console.error("❌ ffmpeg error:", stderr); return reject(err); }
-      if (!fs.existsSync(oggPath)) return reject(new Error("OGG file not created"));
-      resolve();
-    });
+// 🧠 Распознавание речи через Yandex STT
+async function recognizeOgg(oggPath) {
+  const oggData = fs.readFileSync(oggPath);
+  const response = await fetch(STT_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": AUTH_HEADER,
+      "Content-Type": "audio/ogg; codecs=opus",
+    },
+    body: oggData,
   });
+
+  const text = await response.text();
+  console.log("🗣️ Yandex STT response:", text);
+  return text;
 }
 
-// ==========================
-// 🧠 Отправка OGG в Yandex STT
-// ==========================
-async function sendToYandexSTT(oggPath) {
-  try {
-    const oggData = fs.readFileSync(oggPath);
-    const res = await fetch(STT_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": AUTH_HEADER,
-        "Content-Type": "audio/ogg; codecs=opus",
-      },
-      body: oggData,
-    });
-    return await res.text();
-  } catch (err) {
-    console.error("❌ STT request failed:", err);
-    return "ERROR: STT request failed";
-  }
-}
-
-// ==========================
-// 🔌 WebSocket обработчик
-// ==========================
-wss.on("connection", (ws) => {
-  // Уникальный идентификатор для каждого потока
-  const uniqueId = Date.now() + "_" + Math.floor(Math.random() * 10000);
-  const pcmPath = path.join(OGG_DIR, `stream_${uniqueId}.pcm`);
-  const oggPath = path.join(OGG_DIR, `stream_${uniqueId}.ogg`);
-
+// 📡 WebSocket приём аудио
+wss.on("connection", ws => {
+  let file = null;
+  let pcmPath = null;
+  let oggPath = null;
   let totalBytes = 0;
-  const pcmStream = fs.createWriteStream(pcmPath);
 
-  console.log(`🎙 Client connected, stream ID: ${uniqueId}`);
+  function startNewStream() {
+    const timestamp = Date.now();
+    pcmPath = path.join(OGG_DIR, `stream_${timestamp}.pcm`);
+    oggPath = path.join(OGG_DIR, `stream_${timestamp}.ogg`);
+    totalBytes = 0;
+    file = fs.createWriteStream(pcmPath);
+    console.log("🎙 New stream started:", pcmPath);
+  }
 
-  ws.on("message", async (data) => {
-    if (typeof data === "string" && data === "/end") {
-      pcmStream.end();
-      console.log(`⏹ Stream ended (${totalBytes} bytes) ID: ${uniqueId}`);
+  startNewStream();
 
-      try {
-        // Конвертация PCM → OGG
-        await convertPcmToOgg(pcmPath, oggPath);
-        console.log(`🎵 OGG ready: stream_${uniqueId}.ogg`);
+  ws.on("message", async data => {
+    if (data.toString() === "/end") {
+      if (!file) return;
+      file.end();
+      console.log(`⏹ Stream ended: ${path.basename(pcmPath)} (total: ${totalBytes})`);
 
-        // Распознавание речи
-        const text = await sendToYandexSTT(oggPath);
-        console.log(`🗣 STT result [${uniqueId}]:`, text);
+      // 🔄 Конвертация PCM → OGG
+      exec(
+        `ffmpeg -y -f s16le -ar 16000 -ac 1 -i "${pcmPath}" -af "volume=3" -c:a libopus "${oggPath}"`,
+        async err => {
+          if (err) {
+            console.error("❌ ffmpeg error:", err);
+            return;
+          }
+          if (!fs.existsSync(oggPath)) {
+            console.error("❌ No OGG created");
+            return;
+          }
 
-        // Отправляем результат обратно клиенту
-        sendWsSafe(ws, {
-          type: "stt_result",
-          text,
-          filename: `stream_${uniqueId}.ogg`,
-        });
+          console.log(`✅ Converted to OGG: ${path.basename(oggPath)}`);
+          console.log(`🌐 Player: https://${process.env.RENDER_EXTERNAL_HOSTNAME || "localhost"}/player/${path.basename(oggPath)}`);
 
-      } catch (err) {
-        console.error("🔥 Processing error:", err);
-        sendWsSafe(ws, { type: "error", message: err.message });
-      }
+          // 🧠 Распознавание речи
+          const text = await recognizeOgg(oggPath);
 
+          // 🔙 Отправляем результат клиенту
+          ws.send(JSON.stringify({ type: "stt_result", text }));
+
+          // 🔄 Готовим новый поток для следующей записи
+          startNewStream();
+        }
+      );
       return;
     }
 
-    // Получение бинарного аудио
     if (data instanceof Buffer) {
+      if (!file) startNewStream();
+      file.write(data);
       totalBytes += data.length;
-      pcmStream.write(data);
     }
   });
 
   ws.on("close", () => {
-    try { pcmStream.end(); } catch {}
-    console.log(`🔌 Client disconnected, stream ID: ${uniqueId}`);
+    if (file) file.end();
+    console.log("🔌 Client disconnected");
   });
 });
 
-// ==========================
-// 🎧 HTML-плеер для теста
-// ==========================
+// 🎧 HTML-плеер для проверки
 app.get("/player/:filename", (req, res) => {
-  const file = path.join(OGG_DIR, req.params.filename);
-  if (!fs.existsSync(file)) return res.status(404).send("Not found");
+  const filename = req.params.filename;
+  const filePath = path.join(OGG_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
 
   res.send(`
+    <!doctype html>
     <html>
+      <head><title>${filename}</title></head>
       <body>
-        <h1>${req.params.filename}</h1>
+        <h1>${filename}</h1>
         <audio controls autoplay>
-          <source src="/file/${req.params.filename}" type="audio/ogg">
+          <source src="/file/${filename}" type="audio/ogg">
         </audio>
+        <br>
+        <a href="/file/${filename}" download>Скачать</a>
       </body>
     </html>
   `);
@@ -151,6 +132,6 @@ app.get("/player/:filename", (req, res) => {
 
 app.use("/file", express.static(OGG_DIR));
 
-server.listen(process.env.PORT || 8080, () =>
-  console.log("🚀 Server started on port", process.env.PORT || 8080)
-);
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
