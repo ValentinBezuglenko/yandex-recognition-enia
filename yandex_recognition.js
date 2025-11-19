@@ -13,22 +13,18 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// --- HTTP endpoint для Render ---
 app.get("/", (req, res) => res.send("✅ Server is alive"));
 
-// --- Создаём сервер HTTP и WS ---
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
 
-// --- Настройки Yandex STT ---
 const API_KEY = process.env.YANDEX_API_KEY;
 if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
-// --- Ключевые слова для эмоций ---
 const emotionKeywords = {
   greeting: ["привет", "хай", "здарова", "ёня", "юня"],
   happy: ["супер", "молодец"],
@@ -40,7 +36,6 @@ const emotionKeywords = {
   idle: []
 };
 
-// --- Определяем эмоции по ключевым словам ---
 function detectEmotions(text) {
   const recognized = text.toLowerCase();
   const detectedEmotions = [];
@@ -55,7 +50,26 @@ function detectEmotions(text) {
   return detectedEmotions;
 }
 
-// --- WebSocket приём аудио ---
+// --- Игры и ключевые фразы ---
+const gameKeywords = {
+  actions: ["запусти игру действия", "действия открой", "запусти действия", "открой действия"],
+  compare: ["запусти игру сравнение", "сравнение открой", "открой сравнение"],
+  differences: ["запусти игру отличия", "отличия открой", "открой отличия"],
+  distribution: ["запусти игру распределение", "распределение открой", "открой распределение"],
+  order: ["запусти игру очередность", "очередность открой", "открой очередность"],
+  history: ["запусти игру история", "история открой", "открой история"]
+};
+
+function detectGameCommand(text) {
+  const recognized = text.toLowerCase();
+  for (const [game, phrases] of Object.entries(gameKeywords)) {
+    for (const phrase of phrases) {
+      if (recognized.includes(phrase)) return game;
+    }
+  }
+  return null;
+}
+
 wss.on("connection", ws => {
   let pcmChunks = [];
 
@@ -67,7 +81,6 @@ wss.on("connection", ws => {
       pcmChunks = [];
 
       try {
-        // --- Конвертация PCM → OGG через ffmpeg (в памяти) ---
         const oggBuffer = await new Promise((resolve, reject) => {
           const ffmpeg = spawn("ffmpeg", [
             "-f", "s16le",
@@ -82,7 +95,7 @@ wss.on("connection", ws => {
 
           const chunks = [];
           ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
-          ffmpeg.stderr.on("data", () => {}); // можно логировать ошибки
+          ffmpeg.stderr.on("data", () => {});
           ffmpeg.on("close", code => code === 0
             ? resolve(Buffer.concat(chunks))
             : reject(new Error("ffmpeg failed"))
@@ -94,7 +107,6 @@ wss.on("connection", ws => {
 
         console.log(`✅ PCM конвертирован в OGG (в памяти)`);
 
-        // --- Распознаём через Yandex STT ---
         const response = await fetch(STT_URL, {
           method: "POST",
           headers: {
@@ -106,7 +118,6 @@ wss.on("connection", ws => {
         const text = await response.text();
         console.log("🗣️ Yandex STT response:", text);
 
-        // --- Определяем эмоции ---
         let detectedEmotions = [];
         try {
           const parsed = JSON.parse(text);
@@ -115,7 +126,6 @@ wss.on("connection", ws => {
           detectedEmotions = detectEmotions(text);
         }
 
-        // --- Отправка результата стримеру ---
         ws.send(JSON.stringify({ type: "stt_result", text }));
 
         // --- Отправка эмоций всем клиентам ---
@@ -126,6 +136,12 @@ wss.on("connection", ws => {
           });
         });
 
+        // --- Проверка на команду игры ---
+        const game = detectGameCommand(text);
+        if (game) {
+          ws.send(JSON.stringify({ type: "run_game_action", game }));
+        }
+
       } catch (err) {
         console.error("❌ Ошибка конвертации или распознавания:", err);
       }
@@ -133,7 +149,6 @@ wss.on("connection", ws => {
       return;
     }
 
-    // --- Приём PCM в память ---
     if (data instanceof Buffer) {
       pcmChunks.push(data);
     }
@@ -145,12 +160,10 @@ wss.on("connection", ws => {
   });
 });
 
-// --- Подключение к backend.enia-kids.ru ---
 const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] });
 socket.on("connect", () => console.log("🟢 Подключено к backend.enia-kids.ru"));
 socket.on("disconnect", () => console.log("🔴 Отключено от backend.enia-kids.ru"));
 
-// --- Ретрансляция только эмоций от backend ---
 socket.on("/child/game-level/action", msg => {
   let emotion = null;
   switch (msg.type) {
@@ -166,7 +179,6 @@ socket.on("/child/game-level/action", msg => {
   }
 });
 
-// --- Автопинг Render ---
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 setInterval(() => {
   fetch(SELF_URL)
@@ -174,5 +186,4 @@ setInterval(() => {
     .catch(err => console.log("⚠️ Self ping error:", err.message));
 }, 4 * 60 * 1000);
 
-// --- Запуск сервера ---
 server.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
