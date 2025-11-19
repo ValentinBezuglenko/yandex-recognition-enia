@@ -25,7 +25,7 @@ if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
-// --- Ключевые слова для эмоций ---
+// --- Эмоции ---
 const emotionKeywords = {
   greeting: ["привет", "хай", "здарова", "ёня", "юня"],
   happy: ["супер", "молодец"],
@@ -37,17 +37,6 @@ const emotionKeywords = {
   idle: []
 };
 
-// --- Список игр и команд ---
-const gameCommands = {
-  actions: ["запусти игру действия", "действия открой", "запусти действия", "открой действия"],
-  compare: ["запусти игру сравнение", "сравнение открой", "открой сравнение"],
-  differences: ["запусти игру отличия", "отличия открой", "открой отличия"],
-  distribution: ["запусти игру распределение", "распределение открой", "открой распределение"],
-  order: ["запусти игру очередность", "очередность открой", "открой очередность"],
-  history: ["запусти игру история", "история открой", "открой история"]
-};
-
-// --- Функции ---
 function detectEmotions(text) {
   const recognized = text.toLowerCase();
   const detectedEmotions = [];
@@ -62,9 +51,19 @@ function detectEmotions(text) {
   return detectedEmotions;
 }
 
+// --- Игры ---
+const gameKeywords = {
+  actions: ["запусти игру действия", "действия открой", "запусти действия", "открой действия"],
+  compare: ["запусти игру сравнение", "сравнение открой", "открой сравнение"],
+  differences: ["запусти игру отличия", "отличия открой", "открой отличия"],
+  distribution: ["запусти игру распределение", "распределение открой", "открой распределение"],
+  order: ["запусти игру очередность", "очередность открой", "открой очередность"],
+  history: ["запусти игру история", "история открой", "открой история"]
+};
+
 function detectGameCommand(text) {
   const recognized = text.toLowerCase();
-  for (const [game, phrases] of Object.entries(gameCommands)) {
+  for (const [game, phrases] of Object.entries(gameKeywords)) {
     for (const phrase of phrases) {
       if (recognized.includes(phrase)) return game;
     }
@@ -116,45 +115,44 @@ wss.on("connection", ws => {
           },
           body: oggBuffer
         });
-        const textRaw = await response.text();
 
         let recognizedText = "";
         try {
-          recognizedText = JSON.parse(textRaw).result || "";
+          const textRaw = await response.text();
+          recognizedText = JSON.parse(textRaw).result || textRaw;
         } catch {
-          recognizedText = textRaw;
+          recognizedText = "";
         }
 
         ws.send(JSON.stringify({ type: "stt_result", text: recognizedText }));
 
         const detectedEmotions = detectEmotions(recognizedText);
-        detectedEmotions.forEach(emotion => {
+        if (detectedEmotions.length) {
+          const msg = { emotion: detectedEmotions[0] };
           wss.clients.forEach(client => {
-            if (client.readyState === 1) client.send(JSON.stringify({ emotion }));
+            if (client.readyState === 1) client.send(JSON.stringify(msg));
           });
-        });
+        }
 
         const game = detectGameCommand(recognizedText);
         if (game) {
+          const msg = { type: "run_game_action", game };
           wss.clients.forEach(client => {
-            if (client.readyState === 1) client.send(JSON.stringify({ type: "run_game_action", game }));
+            if (client.readyState === 1) client.send(JSON.stringify(msg));
           });
         }
 
       } catch (err) {
         console.error("Ошибка распознавания или конвертации:", err);
       }
+
       return;
     }
 
-    if (data instanceof Buffer) {
-      pcmChunks.push(data);
-    }
+    if (data instanceof Buffer) pcmChunks.push(data);
   });
 
-  ws.on("close", () => {
-    pcmChunks = [];
-  });
+  ws.on("close", () => pcmChunks = []);
 });
 
 // --- Подключение к backend ---
@@ -179,7 +177,9 @@ socket.on("/child/game-level/action", msg => {
 // --- Автопинг Render ---
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 setInterval(() => {
-  fetch(SELF_URL).catch(() => {});
+  fetch(SELF_URL)
+    .then(() => {})
+    .catch(() => {});
 }, 4 * 60 * 1000);
 
-server.listen(PORT);
+server.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
