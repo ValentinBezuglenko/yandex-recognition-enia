@@ -17,6 +17,7 @@ app.get("/", (req, res) => res.send("✅ Server is alive"));
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
+console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
 
 const API_KEY = process.env.YANDEX_API_KEY;
 if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
@@ -24,6 +25,7 @@ if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
 const AUTH_HEADER = API_KEY.startsWith("Api-Key") ? API_KEY : `Api-Key ${API_KEY}`;
 const STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize";
 
+// --- Ключевые слова для эмоций ---
 const emotionKeywords = {
   greeting: ["привет", "хай", "здарова", "ёня", "юня"],
   happy: ["супер", "молодец"],
@@ -35,6 +37,17 @@ const emotionKeywords = {
   idle: []
 };
 
+// --- Список игр и команд ---
+const gameCommands = {
+  actions: ["запусти игру действия", "действия открой", "запусти действия", "открой действия"],
+  compare: ["запусти игру сравнение", "сравнение открой", "открой сравнение"],
+  differences: ["запусти игру отличия", "отличия открой", "открой отличия"],
+  distribution: ["запусти игру распределение", "распределение открой", "открой распределение"],
+  order: ["запусти игру очередность", "очередность открой", "открой очередность"],
+  history: ["запусти игру история", "история открой", "открой история"]
+};
+
+// --- Функции ---
 function detectEmotions(text) {
   const recognized = text.toLowerCase();
   const detectedEmotions = [];
@@ -49,31 +62,24 @@ function detectEmotions(text) {
   return detectedEmotions;
 }
 
-const gameKeywords = {
-  actions: ["actions", "действия", "запусти действия", "открой действия"],
-  compare: ["compare", "сравнение", "запусти сравнение", "открой сравнение"],
-  differences: ["differences", "отличия", "запусти отличия", "открой отличия"],
-  distribution: ["distribution", "распределение", "запусти распределение", "открой распределение"],
-  order: ["order", "очередность", "запусти очередность", "открой очередность"],
-  history: ["history", "история", "запусти историю", "открой историю"]
-};
-
 function detectGameCommand(text) {
   const recognized = text.toLowerCase();
-  for (const [game, keywords] of Object.entries(gameKeywords)) {
-    for (const kw of keywords) {
-      if (recognized.includes(kw)) return game;
+  for (const [game, phrases] of Object.entries(gameCommands)) {
+    for (const phrase of phrases) {
+      if (recognized.includes(phrase)) return game;
     }
   }
   return null;
 }
 
+// --- WebSocket приём аудио ---
 wss.on("connection", ws => {
   let pcmChunks = [];
 
   ws.on("message", async data => {
     if (data.toString() === "/end") {
       if (!pcmChunks.length) return;
+
       const pcmBuffer = Buffer.concat(pcmChunks);
       pcmChunks = [];
 
@@ -93,7 +99,11 @@ wss.on("connection", ws => {
           const chunks = [];
           ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
           ffmpeg.stderr.on("data", () => {});
-          ffmpeg.on("close", code => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error("ffmpeg failed")));
+          ffmpeg.on("close", code => code === 0
+            ? resolve(Buffer.concat(chunks))
+            : reject(new Error("ffmpeg failed"))
+          );
+
           ffmpeg.stdin.write(pcmBuffer);
           ffmpeg.stdin.end();
         });
@@ -102,54 +112,56 @@ wss.on("connection", ws => {
           method: "POST",
           headers: {
             "Authorization": AUTH_HEADER,
-            "Content-Type": "audio/ogg; codecs=opus"
+            "Content-Type": "audio/ogg; codecs=opus",
           },
           body: oggBuffer
         });
+        const textRaw = await response.text();
 
-        const text = await response.text();
-        let detectedEmotions = [];
-        let detectedGame = null;
-
+        let recognizedText = "";
         try {
-          const parsed = JSON.parse(text);
-          detectedEmotions = detectEmotions(parsed.result || "");
-          detectedGame = detectGameCommand(parsed.result || "");
+          recognizedText = JSON.parse(textRaw).result || "";
         } catch {
-          detectedEmotions = detectEmotions(text);
-          detectedGame = detectGameCommand(text);
+          recognizedText = textRaw;
         }
 
-        ws.send(JSON.stringify({ type: "stt_result", text }));
+        ws.send(JSON.stringify({ type: "stt_result", text: recognizedText }));
 
+        const detectedEmotions = detectEmotions(recognizedText);
         detectedEmotions.forEach(emotion => {
           wss.clients.forEach(client => {
             if (client.readyState === 1) client.send(JSON.stringify({ emotion }));
           });
         });
 
-        if (detectedGame) {
+        const game = detectGameCommand(recognizedText);
+        if (game) {
           wss.clients.forEach(client => {
-            if (client.readyState === 1) client.send(JSON.stringify({ type: "run_game_action", game: detectedGame }));
+            if (client.readyState === 1) client.send(JSON.stringify({ type: "run_game_action", game }));
           });
         }
 
       } catch (err) {
-        console.error("❌ Ошибка конвертации или распознавания:", err);
+        console.error("Ошибка распознавания или конвертации:", err);
       }
-
       return;
     }
 
-    if (data instanceof Buffer) pcmChunks.push(data);
+    if (data instanceof Buffer) {
+      pcmChunks.push(data);
+    }
   });
 
-  ws.on("close", () => { pcmChunks = []; });
+  ws.on("close", () => {
+    pcmChunks = [];
+  });
 });
 
+// --- Подключение к backend ---
 const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] });
-socket.on("connect", () => {});
-socket.on("disconnect", () => {});
+socket.on("connect", () => console.log("🟢 Подключено к backend.enia-kids.ru"));
+socket.on("disconnect", () => console.log("🔴 Отключено от backend.enia-kids.ru"));
+
 socket.on("/child/game-level/action", msg => {
   let emotion = null;
   switch (msg.type) {
@@ -164,7 +176,10 @@ socket.on("/child/game-level/action", msg => {
   }
 });
 
+// --- Автопинг Render ---
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-setInterval(() => { fetch(SELF_URL).catch(() => {}); }, 4 * 60 * 1000);
+setInterval(() => {
+  fetch(SELF_URL).catch(() => {});
+}, 4 * 60 * 1000);
 
-server.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
+server.listen(PORT);
