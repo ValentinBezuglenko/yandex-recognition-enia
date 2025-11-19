@@ -17,7 +17,6 @@ app.get("/", (req, res) => res.send("✅ Server is alive"));
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
-console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
 
 const API_KEY = process.env.YANDEX_API_KEY;
 if (!API_KEY) throw new Error("❌ YANDEX_API_KEY not set");
@@ -50,7 +49,6 @@ function detectEmotions(text) {
   return detectedEmotions;
 }
 
-// --- Игровые команды ---
 const gameKeywords = {
   actions: ["actions", "действия", "запусти действия", "открой действия"],
   compare: ["compare", "сравнение", "запусти сравнение", "открой сравнение"],
@@ -76,7 +74,6 @@ wss.on("connection", ws => {
   ws.on("message", async data => {
     if (data.toString() === "/end") {
       if (!pcmChunks.length) return;
-
       const pcmBuffer = Buffer.concat(pcmChunks);
       pcmChunks = [];
 
@@ -96,11 +93,7 @@ wss.on("connection", ws => {
           const chunks = [];
           ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
           ffmpeg.stderr.on("data", () => {});
-          ffmpeg.on("close", code => code === 0
-            ? resolve(Buffer.concat(chunks))
-            : reject(new Error("ffmpeg failed"))
-          );
-
+          ffmpeg.on("close", code => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error("ffmpeg failed")));
           ffmpeg.stdin.write(pcmBuffer);
           ffmpeg.stdin.end();
         });
@@ -109,4 +102,69 @@ wss.on("connection", ws => {
           method: "POST",
           headers: {
             "Authorization": AUTH_HEADER,
-            "Content-Type": "audio/ogg; codecs=opus",
+            "Content-Type": "audio/ogg; codecs=opus"
+          },
+          body: oggBuffer
+        });
+
+        const text = await response.text();
+        let detectedEmotions = [];
+        let detectedGame = null;
+
+        try {
+          const parsed = JSON.parse(text);
+          detectedEmotions = detectEmotions(parsed.result || "");
+          detectedGame = detectGameCommand(parsed.result || "");
+        } catch {
+          detectedEmotions = detectEmotions(text);
+          detectedGame = detectGameCommand(text);
+        }
+
+        ws.send(JSON.stringify({ type: "stt_result", text }));
+
+        detectedEmotions.forEach(emotion => {
+          wss.clients.forEach(client => {
+            if (client.readyState === 1) client.send(JSON.stringify({ emotion }));
+          });
+        });
+
+        if (detectedGame) {
+          wss.clients.forEach(client => {
+            if (client.readyState === 1) client.send(JSON.stringify({ type: "run_game_action", game: detectedGame }));
+          });
+        }
+
+      } catch (err) {
+        console.error("❌ Ошибка конвертации или распознавания:", err);
+      }
+
+      return;
+    }
+
+    if (data instanceof Buffer) pcmChunks.push(data);
+  });
+
+  ws.on("close", () => { pcmChunks = []; });
+});
+
+const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] });
+socket.on("connect", () => {});
+socket.on("disconnect", () => {});
+socket.on("/child/game-level/action", msg => {
+  let emotion = null;
+  switch (msg.type) {
+    case "fail": emotion = "sad"; break;
+    case "success": emotion = "happy"; break;
+    case "completed": emotion = "victory"; break;
+  }
+  if (emotion) {
+    wss.clients.forEach(client => {
+      if (client.readyState === 1) client.send(JSON.stringify({ emotion }));
+    });
+  }
+});
+
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+setInterval(() => { fetch(SELF_URL).catch(() => {}); }, 4 * 60 * 1000);
+
+server.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
