@@ -19,7 +19,6 @@ app.get("/", (req, res) => res.send("✅ Server is alive"));
 // --- Создаём сервер HTTP и WS ---
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
-console.log(`✅ WebSocket proxy запущен на порту ${PORT}`);
 
 // --- Настройки Yandex STT ---
 const API_KEY = process.env.YANDEX_API_KEY;
@@ -229,7 +228,7 @@ wss.on("connection", ws => {
   });
 });
 
-// --- Ретрансляция только эмоций от backend ---
+// --- Ретрансляция эмоций от backend ---
 socket.on("/child/game-level/action", msg => {
   let emotion = null;
   switch (msg.type) {
@@ -244,14 +243,6 @@ socket.on("/child/game-level/action", msg => {
     });
   }
 });
-
-// --- Автопинг Render ---
-const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-setInterval(() => {
-  fetch(SELF_URL)
-    .then(() => console.log("💓 Self ping OK"))
-    .catch(err => console.log("⚠️ Self ping error:", err.message));
-}, 4 * 60 * 1000);
 
 // --- Запуск сервера ---
 server.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
