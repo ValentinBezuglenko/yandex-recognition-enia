@@ -55,6 +55,47 @@ function detectEmotions(text) {
   return detectedEmotions;
 }
 
+// --- GAME COMMANDS ---
+// добавлены фразы для запуска игр: распределение, последовательности, Отличия
+const gamePhrases = {
+  "распределение": [
+    "запусти игру распределение",
+    "запусти распределение",
+    "открой игру распределение",
+    "открой распределение",
+    "игра распределение"
+  ],
+  "последовательности": [
+    "запусти игру последовательности",
+    "запусти последовательности",
+    "открой игру последовательности",
+    "открой последовательности",
+    "игра последовательности"
+  ],
+  "отличия": [
+    "открой игру отличия",
+    "открой отличия",
+    "запусти игру отличия",
+    "запусти отличия",
+    "игра отличия",
+    "игра 'отличия'"
+  ]
+};
+
+function detectGameCommand(text) {
+  if (!text) return null;
+  const t = text.toLowerCase();
+
+  for (const [game, phrases] of Object.entries(gamePhrases)) {
+    for (const p of phrases) {
+      if (t.includes(p)) {
+        return game; // возвращаем нормализованное имя игры: "распределение" / "последовательности" / "отличия"
+      }
+    }
+  }
+  return null;
+}
+
 // --- WebSocket приём аудио ---
 wss.on("connection", ws => {
   let pcmChunks = [];
@@ -108,15 +149,50 @@ wss.on("connection", ws => {
 
         // --- Определяем эмоции ---
         let detectedEmotions = [];
+        let recognizedText = "";
         try {
           const parsed = JSON.parse(text);
-          detectedEmotions = detectEmotions(parsed.result || "");
+          recognizedText = parsed.result || "";
+          detectedEmotions = detectEmotions(recognizedText);
         } catch {
-          detectedEmotions = detectEmotions(text);
+          recognizedText = text;
+          detectedEmotions = detectEmotions(recognizedText);
         }
 
         // --- Отправка результата стримеру ---
-        ws.send(JSON.stringify({ type: "stt_result", text }));
+        ws.send(JSON.stringify({ type: "stt_result", text: recognizedText }));
+
+        // --- Обработка игровых команд (новое) ---
+        try {
+          const game = detectGameCommand(recognizedText);
+          if (game) {
+            console.log(`🎮 Обнаружена команда запуска игры: ${game}`);
+
+            // Отправляем всем локальным WebSocket-клиентам (wss)
+            wss.clients.forEach(client => {
+              if (client.readyState === 1) {
+                client.send(JSON.stringify({ type: "game_command", action: "launch", game }));
+              }
+            });
+
+            // Подтверждение источнику (тот ws, который прислал звук)
+            try {
+              ws.send(JSON.stringify({ type: "stt_command", action: "launch", game }));
+            } catch (e) {
+              // ignore
+            }
+
+            // Отправляем на backend через socket.io — событие согласованное с существующим стилем
+            try {
+              socket.emit("/child/game/launch", { game });
+              console.log("📤 Отправлено событие на backend: /child/game/launch", { game });
+            } catch (e) {
+              console.warn("⚠️ Не удалось отправить событие на backend:", e && e.message ? e.message : e);
+            }
+          }
+        } catch (e) {
+          console.error("❌ Ошибка при обработке игровой команды:", e);
+        }
 
         // --- Отправка эмоций всем клиентам ---
         detectedEmotions.forEach(emotion => {
