@@ -113,6 +113,11 @@ function detectGameCommand(text) {
   return null;
 }
 
+// --- Подключение к backend.enia-kids.ru ---
+const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] });
+socket.on("connect", () => console.log("🟢 Подключено к backend.enia-kids.ru"));
+socket.on("disconnect", () => console.log("🔴 Отключено от backend.enia-kids.ru"));
+
 // --- WebSocket приём аудио ---
 wss.on("connection", ws => {
   let pcmChunks = [];
@@ -140,7 +145,7 @@ wss.on("connection", ws => {
 
           const chunks = [];
           ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
-          ffmpeg.stderr.on("data", () => {}); // можно логировать ошибки
+          ffmpeg.stderr.on("data", () => {});
           ffmpeg.on("close", code => code === 0
             ? resolve(Buffer.concat(chunks))
             : reject(new Error("ffmpeg failed"))
@@ -176,26 +181,21 @@ wss.on("connection", ws => {
           detectedEmotions = detectEmotions(recognizedText);
         }
 
-        // --- Отправка результата стримеру ---
-        ws.send(JSON.stringify({ type: "stt_result", text: recognizedText }));
-
         // --- Обработка игровых команд ---
         try {
           const gameId = detectGameCommand(recognizedText);
           if (gameId) {
             console.log(`🎮 Обнаружена команда запуска игры: ${gameId}`);
 
-            // --- Подтверждение источнику ---
+            // --- Отправка только на тестового пользователя 21 ---
             try {
-              ws.send(JSON.stringify({ type: "stt_command", action: "launch", game: gameId }));
-            } catch (e) { /* ignore */ }
-
-            // --- Отправка на backend ---
-            try {
-              socket.emit("/child/game/launch", { game: gameId });
-              console.log("📤 Отправлено событие на backend: /child/game/launch", { game: gameId });
+              socket.emit("/bot/action/21", {
+                type: "game-select",
+                game: gameId
+              });
+              console.log(`📤 Отправлено событие на /bot/action/21: { type: "game-select", game: ${gameId} }`);
             } catch (e) {
-              console.warn("⚠️ Не удалось отправить событие на backend:", e.message || e);
+              console.warn("⚠️ Не удалось отправить событие на /bot/action/21:", e.message || e);
             }
           }
         } catch (e) {
@@ -228,11 +228,6 @@ wss.on("connection", ws => {
     console.log("🔌 Client disconnected");
   });
 });
-
-// --- Подключение к backend.enia-kids.ru ---
-const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] });
-socket.on("connect", () => console.log("🟢 Подключено к backend.enia-kids.ru"));
-socket.on("disconnect", () => console.log("🔴 Отключено от backend.enia-kids.ru"));
 
 // --- Ретрансляция только эмоций от backend ---
 socket.on("/child/game-level/action", msg => {
