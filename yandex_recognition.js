@@ -32,7 +32,7 @@ const emotionKeywords = {
   greeting: ["привет", "хай", "здарова", "ёня", "юня"],
   happy: ["супер", "молодец", "улыбнись"],
   sad: ["грустно", "печаль"],
-  angry: ["злюсь", "сердит", "дурак"],
+  angry: ["злюсь", "сердит", "дурак", "злой робот"],
   laugh: ["ха-ха", "смешно", "смейся"],
   sleep: ["спать", "сон", "спи", "ложись спать"],
   victory: ["победа", "выиграл"],
@@ -50,9 +50,8 @@ function detectEmotions(text) {
   for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
     for (const kw of keywords) {
       const pattern = kw.toLowerCase().trim();
-      // Регулярка для точного совпадения фразы, игнорируя пробелы и спецсимволы
-      const regex = new RegExp(`\\b${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
-      if (regex.test(recognized)) {
+      // простое включение подстроки вместо \b, чтобы длинные фразы срабатывали
+      if (recognized.includes(pattern)) {
         detectedEmotions.push(emotion);
         break;
       }
