@@ -85,6 +85,19 @@ function detectGameCommand(text) {
   return null;
 }
 
+async function sendBotAction(user, data) {
+  await fetch("https://backend.enia-kids.ru/api/bot/action", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      user,
+      data,
+    })
+  });
+}
+
 // --- Подключение к backend.enia-kids.ru ---
 const socket = io("ws://backend.enia-kids.ru:8025", { transports: ["websocket"] });
 socket.on("connect", () => console.log("🟢 Подключено к backend.enia-kids.ru"));
@@ -156,7 +169,7 @@ wss.on("connection", ws => {
         if (gameId) {
           console.log(`🎮 Обнаружена команда запуска игры: ${gameId}`);
           try {
-            socket.emit("/bot/action/21", { type: "game-select", game: gameId });
+            sendBotAction(21, { type: "game-select", game: gameId });
             console.log(`📤 Отправлено событие на /bot/action/21: { type: "game-select", game: ${gameId} }`);
           } catch (e) {
             console.warn("⚠️ Не удалось отправить событие на /bot/action/21:", e.message || e);
