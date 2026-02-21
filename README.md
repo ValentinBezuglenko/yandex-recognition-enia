@@ -1,10 +1,10 @@
-# OpenAI Realtime Proxy Server
+# Yandex Speech Recognition Proxy Server
 
-Прокси-сервер для подключения ESP32 к OpenAI Realtime API через WebSocket.
+Прокси-сервер для подключения ESP32 к Yandex Speech Recognition API через WebSocket.
 
 ## Описание
 
-Сервер принимает WebSocket соединения от ESP32 и проксирует аудио в OpenAI Realtime API для транскрипции речи в текст.
+Сервер принимает WebSocket соединения от ESP32 и проксирует аудио в Yandex Speech Recognition API для транскрипции речи в текст.
 
 ## Установка
 
@@ -21,7 +21,7 @@ npm install
 Создайте файл `.env` в корне проекта (не коммитьте его в Git):
 
 ```env
-OPENAI_API_KEY=sk-proj-your-api-key-here
+YANDEX_API_KEY=your-yandex-api-key-here
 PORT=8765
 ```
 
@@ -29,13 +29,13 @@ PORT=8765
 
 **Windows (PowerShell):**
 ```powershell
-$env:OPENAI_API_KEY="sk-proj-your-api-key-here"
+$env:YANDEX_API_KEY="your-yandex-api-key-here"
 $env:PORT=8765
 ```
 
 **Linux/Mac:**
 ```bash
-export OPENAI_API_KEY="sk-proj-your-api-key-here"
+export YANDEX_API_KEY="your-yandex-api-key-here"
 export PORT=8765
 ```
 
@@ -57,22 +57,22 @@ npm start
 
 Или с указанием порта:
 ```bash
-PORT=8765 node proxy_openai_realtime.js
+PORT=10000 node yandex_recognition.js
 ```
 
 ## Переменные окружения
 
 - `PORT` - Порт для WebSocket сервера (по умолчанию: 8765)
-- `OPENAI_API_KEY` - API ключ OpenAI (обязательно)
+- `YANDEX_API_KEY` - API ключ Yandex Cloud (обязательно)
 - `HTTP_PROXY` / `HTTPS_PROXY` / `PROXY_URL` - Прокси для обхода географических ограничений (опционально)
 
 ## Деплой на Render
 
 1. Создайте новый Web Service на Render
 2. Подключите этот репозиторий
-3. Установите переменную окружения `OPENAI_API_KEY` в настройках сервиса:
+3. Установите переменную окружения `YANDEX_API_KEY` в настройках сервиса:
    - Dashboard → Settings → Environment Variables
-   - Добавьте: `OPENAI_API_KEY` = `ваш-ключ`
+   - Добавьте: `YANDEX_API_KEY` = `ваш-ключ`
 4. Build Command: `npm install`
 5. Start Command: `npm start`
 

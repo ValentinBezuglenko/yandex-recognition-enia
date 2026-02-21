@@ -16,6 +16,28 @@ const PORT = process.env.PORT || 10000;
 // --- HTTP endpoint для Render ---
 app.get("/", (req, res) => res.send("✅ Server is alive"));
 
+// --- Статические файлы ---
+app.use(express.static("public"));
+
+// --- Эндпоинт для управления эмоциями ---
+app.post("/send-emotion", express.json(), (req, res) => {
+  const { emotion } = req.body;
+  
+  if (!emotion) {
+    return res.status(400).json({ error: "Требуется указать эмоцию" });
+  }
+
+  // Отправляем эмоцию всем подключенным WebSocket клиентам
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) {
+      client.send(JSON.stringify({ emotion }));
+    }
+  });
+
+  console.log(`>manual эмоция отправлена: ${emotion}`);
+  res.json({ success: true, emotion });
+});
+
 // --- Создаём сервер HTTP и WS ---
 const server = createServer(app);
 const wss = new WebSocketServer({ server });

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Управление эмоциями</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .buttons-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 15px;
+            font-size: 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            transition: background-color 0.3s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:active {
+            transform: translateY(1px);
+        }
+        .status {
+            text-align: center;
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>Управление эмоциями</h1>
+    <div class="buttons-container" id="emotionButtons"></div>
+    <div class="status" id="status" style="display: none;"></div>
+
+    <script>
+        const emotions = [
+            'greeting', 'happy', 'sad', 'angry', 'laugh', 'sleep', 'victory', 'idle', 'yes', 'no', 'love'
+        ];
+
+        const emotionButtonsContainer = document.getElementById('emotionButtons');
+        const statusElement = document.getElementById('status');
+
+        // Создаем кнопки для каждой эмоции
+        emotions.forEach(emotion => {
+            const button = document.createElement('button');
+            button.textContent = emotion;
+            button.dataset.emotion = emotion;
+            button.addEventListener('click', sendEmotion);
+            emotionButtonsContainer.appendChild(button);
+        });
+
+        async function sendEmotion(event) {
+            const emotion = event.target.dataset.emotion;
+            
+            try {
+                const response = await fetch('/send-emotion', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ emotion: emotion }),
+                });
+
+                if (response.ok) {
+                    showStatus(`Эмоция '${emotion}' отправлена успешно!`, 'success');
+                } else {
+                    showStatus(`Ошибка при отправке эмоции '${emotion}'`, 'error');
+                }
+            } catch (error) {
+                showStatus(`Ошибка сети: ${error.message}`, 'error');
+            }
+        }
+
+        function showStatus(message, type) {
+            statusElement.textContent = message;
+            statusElement.className = `status ${type}`;
+            statusElement.style.display = 'block';
+            
+            // Скрыть сообщение через 3 секунды
+            setTimeout(() => {
+                statusElement.style.display = 'none';
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
