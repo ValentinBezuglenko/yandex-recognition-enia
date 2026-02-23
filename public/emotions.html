@@ -65,6 +65,13 @@
         const emotions = [
             'greeting', 'happy', 'sad', 'angry', 'laugh', 'sleep', 'victory', 'idle', 'yes', 'no', 'love'
         ];
+        
+        // Добавляем специальную кнопку для запроса статуса батареи
+        const batteryButton = document.createElement('button');
+        batteryButton.textContent = 'Запросить статус батареи';
+        batteryButton.style.backgroundColor = '#28a745';
+        batteryButton.addEventListener('click', sendBatteryStatus);
+        emotionButtonsContainer.appendChild(batteryButton);
 
         const emotionButtonsContainer = document.getElementById('emotionButtons');
         const statusElement = document.getElementById('status');
@@ -109,6 +116,26 @@
             setTimeout(() => {
                 statusElement.style.display = 'none';
             }, 3000);
+        }
+        
+        async function sendBatteryStatus() {
+            try {
+                const response = await fetch('/send-command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ command: 'battery', action: 'status' }),
+                });
+
+                if (response.ok) {
+                    showStatus('Запрос на отображение статуса батареи отправлен!', 'success');
+                } else {
+                    showStatus('Ошибка при отправке запроса на статус батареи', 'error');
+                }
+            } catch (error) {
+                showStatus(`Ошибка сети: ${error.message}`, 'error');
+            }
         }
     </script>
 </body>

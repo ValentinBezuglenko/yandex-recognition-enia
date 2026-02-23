@@ -38,6 +38,28 @@ app.post("/send-emotion", express.json(), (req, res) => {
   res.json({ success: true, emotion });
 });
 
+// --- Эндпоинт для отправки команд ---
+app.post("/send-command", express.json(), (req, res) => {
+  const { command, action } = req.body;
+  
+  if (!command || !action) {
+    return res.status(400).json({ error: "Требуются параметры command и action" });
+  }
+
+  // Формируем команду для отправки
+  const commandMessage = { [command]: action };
+  
+  // Отправляем команду всем подключенным WebSocket клиентам
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) {
+      client.send(JSON.stringify(commandMessage));
+    }
+  });
+
+  console.log(`>manual команда отправлена: ${command}:${action}`);
+  res.json({ success: true, command, action });
+});
+
 // --- Создаём сервер HTTP и WS ---
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
