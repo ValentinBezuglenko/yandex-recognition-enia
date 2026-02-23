@@ -66,15 +66,15 @@
             'greeting', 'happy', 'sad', 'angry', 'laugh', 'sleep', 'victory', 'idle', 'yes', 'no', 'love'
         ];
         
+        const emotionButtonsContainer = document.getElementById('emotionButtons');
+        const statusElement = document.getElementById('status');
+        
         // Добавляем специальную кнопку для запроса статуса батареи
         const batteryButton = document.createElement('button');
         batteryButton.textContent = 'Запросить статус батареи';
         batteryButton.style.backgroundColor = '#28a745';
         batteryButton.addEventListener('click', sendBatteryStatus);
         emotionButtonsContainer.appendChild(batteryButton);
-
-        const emotionButtonsContainer = document.getElementById('emotionButtons');
-        const statusElement = document.getElementById('status');
 
         // Создаем кнопки для каждой эмоции
         emotions.forEach(emotion => {
